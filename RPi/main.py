@@ -1,38 +1,44 @@
-from enum import Enum
-from gpiozero import Button
-from threading import Thread
-from signal import pause
-from goggles_lib import GoggleState, SharedClass, GoggleButton, CameraClient
-from picamera2 import Picamera2
-
-# -- GPIO Setup --
-BTN_GPIO = 23  # GPIO 23 (Physical Pin 26)
+"""
+Main entry point for Dawggles application
+"""
+from goggles_lib import SharedClass, Display, Server, GoggleButton, CameraClient
+from apps.translation_app import translation_button_callback, translation_message_handler
+from app_manager import start_app
 
 # -- Camera Setup --
 # Configure for 1080p - fast and enough for OCR translation
 CAMERA_CONFIG = {"size": (1920, 1080)}
 
 def main():
-    print("Starting RPi Main Program...")
-    # Shared Class Initialization
-    shared_class = SharedClass()
+    print("Starting Dawggles...")
+    
+    # Initialize shared class, server, display, button, and camera client
+    shared = SharedClass()
+    shared.server = Server(shared, host='0.0.0.0', port=12345)
+    shared.display = Display(shared)
+    shared.button = GoggleButton(shared_class=shared, pin=27, button_callback=translation_button_callback)
+    shared.camera_client = CameraClient(shared, CAMERA_CONFIG)
 
-    # Goggle Button Initialization
-    goggle_button = GoggleButton(BTN_GPIO, shared_class)
+    # Start with translation app
+    start_app('translation', shared, shared.button, shared.server)
+    
+    print(f"Current app: {shared.current_app}")
+    print("Dawggles ready - button and server are listening...")
+    
+    # Keep the program running
+    try:
+        while True:
+            pass
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        if shared.camera_client:
+            shared.camera_client.stop_capture_loop()
+            if shared.camera_client.camera:
+                try:
+                    shared.camera_client.camera.stop()
+                except Exception:
+                    pass
 
-    # Goggle Camera Initialization
-    picam2 = Picamera2()
-    config = picam2.create_still_configuration(main=CAMERA_CONFIG)
-    picam2.configure(config)
-    picam2.start()
-    camera_client = CameraClient(picam2, shared_class)
-    goggle_camera = Thread(target=camera_client.capture_loop, daemon=True)
-    goggle_camera.start()
-
-    while True:
-        if shared_class.goggle_state == GoggleState.DISCONNECTED:
-            # Display Waiting for Connection Message (Placeholder)
-            # Fix this
-            shared_class.goggle_state = GoggleState.DEFAULT
-            print("Goggles connected! State set to DEFAULT.")
+if __name__ == "__main__":
+    main()
 
