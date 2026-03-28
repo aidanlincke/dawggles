@@ -1,3 +1,10 @@
+# Data on PIN 19
+# Clk on PIN 23
+# DC on PIN 13
+# CS on pin 11
+# Vin on pin 1
+# GND on pin 6
+
 import board
 import busio
 import digitalio
