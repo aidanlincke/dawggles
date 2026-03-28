@@ -92,6 +92,11 @@ def translation_message_handler(shared_class, message):
     """
     Message handler for translation app messages
     """
+    # Dev / wire test: reply on same TCP connection (see RPi/test_phone_client.py)
+    if message.get("_dawggles_ping") is True and shared_class.server:
+        shared_class.server.send_json({"_dawggles_pong": True})
+        return
+
     # Check for app switching from phone
     if 'app' in message and message['app'] != shared_class.current_app:
         from app_manager import start_app

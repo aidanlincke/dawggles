@@ -6,8 +6,11 @@ Here that object is a normal SharedClass with a stub button and no camera — sa
 
   python dev_server.py
 
-  # Framed JSON (4-byte big-endian length + UTF-8 JSON), same as the phone must send:
-  python3 -c "import json,socket,struct; c=socket.create_connection(('127.0.0.1',12345)); b=json.dumps({'data':'hello'}).encode(); c.sendall(struct.pack('!I',len(b))+b)"
+  # One-way send (zsh-safe: use >I not !I inside double quotes):
+  python3 -c 'import json,socket,struct;c=socket.create_connection(("127.0.0.1",12345));b=json.dumps({"data":"hello"}).encode();c.sendall(struct.pack(">I",len(b))+b);c.close()'
+
+  # Pi -> phone + phone -> Pi (uses _dawggles_ping / _dawggles_pong in translation handler):
+  python3 test_phone_client.py
 """
 from goggles_lib import Display, Server, SharedClass
 from app_manager import start_app
