@@ -2,3 +2,4 @@
 iOS/Dawggles.xcodeproj/xcuserdata
 iOS/Dawggles.xcodeproj/project.xcworkspace/xcuserdata
 RPi/venv
+*.pyc

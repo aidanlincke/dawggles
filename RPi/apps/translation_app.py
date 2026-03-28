@@ -2,7 +2,7 @@
 Translation App - Functions and utilities for translation-based applications
 """
 from threading import Timer
-from app_manager import APPS, start_app
+
 
 def translation_display_update(shared_class):
     """
@@ -30,6 +30,8 @@ def translation_button_callback(shared_class):
 
     # triple-click should always switch app regardless of current app mode
     if click_count >= 3:
+        from app_manager import APPS, start_app
+
         app_names = list(APPS.keys())
         current_idx = app_names.index(shared_class.current_app) if shared_class.current_app in app_names else 0
         next_app = app_names[(current_idx + 1) % len(app_names)]
@@ -92,6 +94,8 @@ def translation_message_handler(shared_class, message):
     """
     # Check for app switching from phone
     if 'app' in message and message['app'] != shared_class.current_app:
+        from app_manager import start_app
+
         start_app(message['app'], shared_class, shared_class.button, shared_class.server)
         return  # Don't process other message data when switching apps
     
