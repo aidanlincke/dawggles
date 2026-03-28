@@ -1,9 +1,9 @@
-# Data on PIN 19
-# Clk on PIN 23
-# DC on PIN 13
-# CS on pin 11
-# Vin on pin 1
-# GND on pin 6
+# Data - green - pin 19
+# Clk - yellow - pin 23
+# DC - orange - pin 13
+# CS - red - pin 11
+# Vin - brown - pin 1
+# GND - black - pin 6
 
 import board
 import busio
