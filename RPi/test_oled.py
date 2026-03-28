@@ -19,6 +19,11 @@ reset = None
 # 3. Create the display object (for a standard 128x64 resolution OLED)
 display = adafruit_ssd1306.SSD1306_SPI(128, 64, spi, dc, reset, cs)
 
+display.write_cmd(0xA0) # Flip Horizontal (Mirror fix)
+
+# Reduce the glare! / Decrease Brightness
+display.contrast(5) # 10 is quite dim; 50 is a nice "medium"
+
 # --- LET'S TEST IT! ---
 print("Initializing display...")
 
@@ -28,10 +33,17 @@ display.show()
 time.sleep(0.5)
 
 # Fill the entire screen with white pixels
-print("Flashing screen white...")
-display.fill(1)
+print("Flashing DAWGGLES...")
+# 2. Draw DAWGGLES in the "Center Safe Zone"
+# Screen is 128 wide. "DAWGGLES" is ~48px wide.
+# (128 - 48) / 2 = 40. 
+# We'll use x=40 and y=28 to stay away from the warped edges.
+text_x = 40
+text_y = 28
+
+display.text("DAWGGLES", text_x, text_y, 1)
 display.show()
-time.sleep(1)
+time.sleep(15)
 
 # Clear it again to black
 print("Clearing screen...")
