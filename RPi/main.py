@@ -24,6 +24,7 @@ def main():
     # Initialize shared class, server, display, button, and camera client
     shared = SharedClass()
     shared.server = Server(shared, host='0.0.0.0', port=12345)
+    print("TCP listening on 0.0.0.0:12345 (connect from Mac/phone on this Pi's LAN IP)")
     shared.display = Display(shared)
     shared.button = GoggleButton(shared_class=shared, pin=27, button_callback=translation_button_callback)
     shared.camera_client = CameraClient(shared, CAMERA_CONFIG)

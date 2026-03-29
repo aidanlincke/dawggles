@@ -216,7 +216,7 @@ class CameraClient:
 
     def initialize_camera(self, config):
         """Initialize Picamera2 and set up camera parameters"""
-        from Picamera2 import Picamera2
+        from picamera2 import Picamera2
 
         if not self.camera:
             self.camera = Picamera2()
