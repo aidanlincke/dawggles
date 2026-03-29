@@ -1,10 +1,64 @@
+import base64
 import io
 import json
 import socket
-from enum import Enum
-from gpiozero import Button
-from Picamera2 import Picamera2
+import struct
 from threading import Lock, Timer, Event, Thread
+
+# Max JSON payload per framed message (bytes after length prefix).
+MAX_JSON_MESSAGE_BYTES = 32 * 1024 * 1024
+
+# JPEG pipeline before base64/TCP (Pi Zero 2 W: smaller files = less CPU + less Wi‑Fi time).
+TRANSFER_JPEG_MAX_EDGE_PX = 1280
+TRANSFER_JPEG_QUALITY_START = 82
+TRANSFER_JPEG_QUALITY_MIN = 52
+TRANSFER_JPEG_QUALITY_STEP = 6
+TRANSFER_JPEG_TARGET_BYTES = 400_000
+
+
+def compress_jpeg_for_transfer(jpeg_bytes: bytes) -> bytes:
+    """
+    Downscale and re-encode JPEG before sending to the TCP client. Keeps full-res capture in memory
+    only until this returns; caller decides what to store.
+
+    Uses Pillow if installed; otherwise returns input unchanged.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return jpeg_bytes
+
+    try:
+        im = Image.open(io.BytesIO(jpeg_bytes))
+        im = im.convert("RGB")
+    except Exception:
+        return jpeg_bytes
+
+    max_edge = TRANSFER_JPEG_MAX_EDGE_PX
+    w, h = im.size
+    if max(w, h) > max_edge:
+        try:
+            resample = Image.Resampling.BILINEAR
+        except AttributeError:
+            resample = Image.BILINEAR
+        im.thumbnail((max_edge, max_edge), resample)
+
+    buf = io.BytesIO()
+    q = TRANSFER_JPEG_QUALITY_START
+    best = jpeg_bytes
+    while q >= TRANSFER_JPEG_QUALITY_MIN:
+        buf.seek(0)
+        buf.truncate()
+        im.save(buf, format="JPEG", quality=q, optimize=True)
+        candidate = buf.getvalue()
+        if len(candidate) <= TRANSFER_JPEG_TARGET_BYTES or q == TRANSFER_JPEG_QUALITY_MIN:
+            best = candidate
+            break
+        q -= TRANSFER_JPEG_QUALITY_STEP
+        best = candidate
+
+    return best
+
 
 # -- Goggle Shared Class --
 class SharedClass:
@@ -35,35 +89,119 @@ class SharedClass:
 
 # -- Server Class --
 class Server:
+    """
+    TCP server: one persistent phone connection at a time, full duplex.
+
+    Wire format (both directions): 4-byte big-endian length + UTF-8 JSON bytes.
+    The phone must use the same framing when sending; use send_json() when pushing from the Pi.
+    """
+
     def __init__(self, shared_class, host='0.0.0.0', port=12345, message_handler=None):
         self.shared_class = shared_class
         self.host = host
         self.port = port
-        self.message_handler = message_handler  # Function to handle incoming messages
+        self.message_handler = message_handler  # (shared_class, dict) -> None
+        self._client_socket = None
+        self._client_lock = Lock()
+        self._send_lock = Lock()
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(1)
-        self.thread = Thread(target=self._listen_loop)
-        self.thread.daemon = True
+        self.thread = Thread(target=self._listen_loop, daemon=True)
         self.thread.start()
+
+    @staticmethod
+    def _recv_exact(sock, n):
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("connection closed while reading")
+            buf += chunk
+        return bytes(buf)
+
+    def _replace_client(self, new_sock):
+        with self._client_lock:
+            old = self._client_socket
+            self._client_socket = new_sock
+        if old is not None:
+            try:
+                old.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                old.close()
+            except OSError:
+                pass
+
+    def _clear_client_if(self, sock):
+        with self._client_lock:
+            if self._client_socket is sock:
+                self._client_socket = None
+
+    def send_json(self, obj):
+        """Send one framed JSON message to the connected phone (thread-safe). Returns False if no client."""
+        body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+        if len(body) > MAX_JSON_MESSAGE_BYTES:
+            raise ValueError("JSON message exceeds MAX_JSON_MESSAGE_BYTES")
+        frame = struct.pack("!I", len(body)) + body
+        with self._send_lock:
+            sock = self._client_socket
+            if sock is None:
+                return False
+            try:
+                sock.sendall(frame)
+                return True
+            except OSError as e:
+                print(f"send_json failed: {e}")
+                return False
+
+    def _client_loop(self, client_socket, addr):
+        print(f"Session started with {addr}")
+        try:
+            while True:
+                header = self._recv_exact(client_socket, 4)
+                (length,) = struct.unpack("!I", header)
+                if length == 0 or length > MAX_JSON_MESSAGE_BYTES:
+                    print(f"Invalid message length: {length}")
+                    break
+                raw = self._recv_exact(client_socket, length)
+                try:
+                    message = json.loads(raw.decode("utf-8"))
+                except json.JSONDecodeError:
+                    print("Invalid JSON in framed message")
+                    break
+                if not isinstance(message, dict):
+                    print("Expected JSON object at top level")
+                    break
+                if self.message_handler:
+                    self.message_handler(self.shared_class, message)
+                else:
+                    print("No message handler provided")
+        except ConnectionError as e:
+            print(f"Client {addr} disconnected: {e}")
+        except OSError as e:
+            print(f"Client {addr} socket error: {e}")
+        finally:
+            self._clear_client_if(client_socket)
+            try:
+                client_socket.close()
+            except OSError:
+                pass
+            print(f"Session ended with {addr}")
 
     def _listen_loop(self):
         while True:
             try:
                 client_socket, addr = self.server_socket.accept()
                 print(f"Connection from {addr}")
-                data = client_socket.recv(1024)
-                if data:
-                    try:
-                        message = json.loads(data.decode('utf-8'))
-                        if self.message_handler:
-                            self.message_handler(self.shared_class, message)
-                        else:
-                            print("No message handler provided")
-                    except json.JSONDecodeError:
-                        print("Invalid JSON received")
-                client_socket.close()
+                self._replace_client(client_socket)
+                Thread(
+                    target=self._client_loop,
+                    args=(client_socket, addr),
+                    daemon=True,
+                ).start()
             except Exception as e:
                 print(f"Server error: {e}")
 
@@ -78,9 +216,11 @@ class CameraClient:
 
     def initialize_camera(self, config):
         """Initialize Picamera2 and set up camera parameters"""
+        from Picamera2 import Picamera2
+
         if not self.camera:
             self.camera = Picamera2()
-        self.camera.configure(self.camera.create_still_configuration(main=self.config))
+        self.camera.configure(self.camera.create_still_configuration(main=config))
         self.camera.start()
         print("Camera initialized in CameraClient")
 
@@ -107,8 +247,8 @@ class CameraClient:
                 stream = io.BytesIO()
                 self.camera.capture_file(stream, format='jpeg')
                 self.shared_class.data['picture'] = stream.getvalue()
-                print("Capture complete! Sending to iPhone...")
-                self.send_to_iphone()
+                print("Capture complete! Sending to client...")
+                self.send_captured_jpeg_to_client()
                 self.shared_class.mode = 'default'
             except Exception as e:
                 print(f"Camera Error: {e}")
@@ -116,8 +256,44 @@ class CameraClient:
             finally:
                 self.shared_class.shutter_event.clear()
 
-    def send_to_iphone(self):
-        print("Picture sent to iPhone!")
+    def send_captured_jpeg_to_client(self):
+        """Push JPEG (or ready signal) over TCP using shared.current_app — no app-specific names here."""
+        srv = self.shared_class.server
+        app = self.shared_class.current_app
+        if srv is None:
+            print("Picture captured (no TCP client connected)")
+            return
+        pic = self.shared_class.data.get("picture")
+        if not pic:
+            if srv.send_json(
+                {"app": app, "event": "picture_ready", "format": "jpeg"}
+            ):
+                print("picture_ready sent (no image bytes in memory)")
+            else:
+                print("Picture captured (no TCP client connected)")
+            return
+        pic_send = compress_jpeg_for_transfer(pic)
+        if len(pic_send) != len(pic):
+            print(f"JPEG transfer profile: {len(pic)} -> {len(pic_send)} bytes")
+        b64 = base64.standard_b64encode(pic_send).decode("ascii")
+        payload = {
+            "app": app,
+            "event": "picture",
+            "format": "jpeg",
+            "image_b64": b64,
+            "byte_length": len(pic_send),
+            "source_bytes": len(pic),
+        }
+        try:
+            if srv.send_json(payload):
+                print(f"JPEG sent to client ({len(pic_send)} bytes wire payload)")
+            else:
+                print("Picture captured (no TCP client connected)")
+        except ValueError as e:
+            print(f"JPEG too large for one JSON frame ({e}); sending picture_ready only")
+            srv.send_json(
+                {"app": app, "event": "picture_ready", "format": "jpeg"}
+            )
 
     def video_loop(self):
         while self.running:
@@ -128,14 +304,16 @@ class CameraClient:
             while self.shared_class.video_event.is_set() and self.running:
                 pass
             print("Video recording stopped...")
-            self.send_video_to_iphone()
+            self.send_video_to_client()
 
-    def send_video_to_iphone(self):
-        print("Video sent to iPhone!")
+    def send_video_to_client(self):
+        print("Video sent to client!")
 
 # -- Goggle Button Class --
 class GoggleButton:
     def __init__(self, shared_class, pin, button_callback):
+        from gpiozero import Button
+
         self.btn = Button(pin)
         self.shared_class = shared_class
         self.button_callback = button_callback

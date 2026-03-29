@@ -2,7 +2,7 @@
 Translation App - Functions and utilities for translation-based applications
 """
 from threading import Timer
-from app_manager import APPS, start_app
+
 
 def translation_display_update(shared_class):
     """
@@ -30,6 +30,8 @@ def translation_button_callback(shared_class):
 
     # triple-click should always switch app regardless of current app mode
     if click_count >= 3:
+        from app_manager import APPS, start_app
+
         app_names = list(APPS.keys())
         current_idx = app_names.index(shared_class.current_app) if shared_class.current_app in app_names else 0
         next_app = app_names[(current_idx + 1) % len(app_names)]
@@ -90,8 +92,36 @@ def translation_message_handler(shared_class, message):
     """
     Message handler for translation app messages
     """
+    # Dev / wire test: reply on same TCP connection (see RPi/test_phone_client.py)
+    if message.get("_dawggles_ping") is True and shared_class.server:
+        shared_class.server.send_json({"_dawggles_pong": True})
+        return
+
+    # Dev: Mac -> Pi arbitrary bytes (see RPi/mac_push_client.py file ...)
+    if message.get("_dawggles_test_upload") is True:
+        import base64
+        import os
+
+        try:
+            raw = base64.b64decode(message["bytes_b64"])
+        except Exception as e:
+            print(f"_dawggles_test_upload: bad base64: {e}")
+            return
+        name = message.get("save_as") or "dawggles_test_recv.bin"
+        safe = os.path.basename(name) or "dawggles_test_recv.bin"
+        out = os.path.join("/tmp", safe)
+        try:
+            with open(out, "wb") as f:
+                f.write(raw)
+            print(f"_dawggles_test_upload: wrote {len(raw)} bytes -> {out}")
+        except OSError as e:
+            print(f"_dawggles_test_upload: write failed: {e}")
+        return
+
     # Check for app switching from phone
     if 'app' in message and message['app'] != shared_class.current_app:
+        from app_manager import start_app
+
         start_app(message['app'], shared_class, shared_class.button, shared_class.server)
         return  # Don't process other message data when switching apps
     

@@ -1,13 +1,22 @@
 """
 Main entry point for Dawggles application
 """
+import time
+from threading import Thread
+
 from goggles_lib import SharedClass, Display, Server, GoggleButton, CameraClient
-from apps.translation_app import translation_button_callback, translation_message_handler
+from apps.translation_app import translation_button_callback
 from app_manager import start_app
 
 # -- Camera Setup --
-# Configure for 1080p - fast and enough for OCR translation
-CAMERA_CONFIG = {"size": (1920, 1080)}
+# 1280x720: lighter on Pi Zero 2 W (sensor + encode); still fine for OCR on phone.
+# Full-res 1080p stills cost more RAM/CPU; transfer path also downscales in goggles_lib.
+CAMERA_CONFIG = {"size": (1280, 720)}
+
+# Like test_camera.py: warm up sensor, then fire one capture without pressing the button.
+# Set False for normal use (button-only).
+AUTO_CAPTURE_ON_START = True
+AUTO_CAPTURE_WARMUP_SEC = 2
 
 def main():
     print("Starting Dawggles...")
@@ -21,7 +30,17 @@ def main():
 
     # Start with translation app
     start_app('translation', shared, shared.button, shared.server)
-    
+
+    if AUTO_CAPTURE_ON_START:
+
+        def _auto_capture() -> None:
+            time.sleep(AUTO_CAPTURE_WARMUP_SEC)
+            print("AUTO_CAPTURE_ON_START: taking picture (same path as shutter button)...")
+            shared.mode = "capturing"
+            shared.shutter_event.set()
+
+        Thread(target=_auto_capture, daemon=True).start()
+
     print(f"Current app: {shared.current_app}")
     print("Dawggles ready - button and server are listening...")
     

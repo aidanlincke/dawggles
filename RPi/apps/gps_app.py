@@ -2,7 +2,7 @@
 GPS App - Functions and utilities for GPS-based applications
 """
 from threading import Timer
-from app_manager import APPS, start_app
+
 
 def gps_display_update(shared_class):
     """
@@ -39,6 +39,7 @@ def _process_gps_clicks(shared_class):
     """
     Process GPS button clicks for GPS actions or switching apps
     """
+    from app_manager import APPS, start_app
 
     if shared_class.data.get('click_count', 0) >= 3:
         # Triple click or more: Switch to next app
@@ -57,6 +58,8 @@ def gps_message_handler(shared_class, message):
     """
     # Check for app switching from phone
     if 'app' in message and message['app'] != shared_class.current_app:
+        from app_manager import start_app
+
         start_app(message['app'], shared_class, shared_class.button, shared_class.server)
         return  # Don't process other message data when switching apps
     
