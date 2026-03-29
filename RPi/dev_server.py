@@ -26,11 +26,12 @@ def main():
     shared.display = Display(shared)
     shared.button = StubButton()
     shared.camera_client = None
-    shared.server = Server(shared, host="127.0.0.1", port=12345)
+    # 0.0.0.0 = accept from LAN (phone / laptop). Use 127.0.0.1 only for same-machine tests.
+    shared.server = Server(shared, host="0.0.0.0", port=12345)
 
     start_app("translation", shared, shared.button, shared.server)
 
-    print("Dev server listening on 127.0.0.1:12345 (Ctrl+C to stop)")
+    print("Dev server listening on 0.0.0.0:12345 — connect from another device using this Pi's IP (Ctrl+C to stop)")
     try:
         while True:
             pass
