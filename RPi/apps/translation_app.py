@@ -97,6 +97,27 @@ def translation_message_handler(shared_class, message):
         shared_class.server.send_json({"_dawggles_pong": True})
         return
 
+    # Dev: Mac -> Pi arbitrary bytes (see RPi/mac_push_client.py file ...)
+    if message.get("_dawggles_test_upload") is True:
+        import base64
+        import os
+
+        try:
+            raw = base64.b64decode(message["bytes_b64"])
+        except Exception as e:
+            print(f"_dawggles_test_upload: bad base64: {e}")
+            return
+        name = message.get("save_as") or "dawggles_test_recv.bin"
+        safe = os.path.basename(name) or "dawggles_test_recv.bin"
+        out = os.path.join("/tmp", safe)
+        try:
+            with open(out, "wb") as f:
+                f.write(raw)
+            print(f"_dawggles_test_upload: wrote {len(raw)} bytes -> {out}")
+        except OSError as e:
+            print(f"_dawggles_test_upload: write failed: {e}")
+        return
+
     # Check for app switching from phone
     if 'app' in message and message['app'] != shared_class.current_app:
         from app_manager import start_app

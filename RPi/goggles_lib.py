@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import socket
@@ -6,6 +7,58 @@ from threading import Lock, Timer, Event, Thread
 
 # Max JSON payload per framed message (bytes after length prefix).
 MAX_JSON_MESSAGE_BYTES = 32 * 1024 * 1024
+
+# JPEG pipeline before base64/TCP (Pi Zero 2 W: smaller files = less CPU + less Wi‑Fi time).
+TRANSFER_JPEG_MAX_EDGE_PX = 1280
+TRANSFER_JPEG_QUALITY_START = 82
+TRANSFER_JPEG_QUALITY_MIN = 52
+TRANSFER_JPEG_QUALITY_STEP = 6
+TRANSFER_JPEG_TARGET_BYTES = 400_000
+
+
+def compress_jpeg_for_transfer(jpeg_bytes: bytes) -> bytes:
+    """
+    Downscale and re-encode JPEG before sending to the TCP client. Keeps full-res capture in memory
+    only until this returns; caller decides what to store.
+
+    Uses Pillow if installed; otherwise returns input unchanged.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return jpeg_bytes
+
+    try:
+        im = Image.open(io.BytesIO(jpeg_bytes))
+        im = im.convert("RGB")
+    except Exception:
+        return jpeg_bytes
+
+    max_edge = TRANSFER_JPEG_MAX_EDGE_PX
+    w, h = im.size
+    if max(w, h) > max_edge:
+        try:
+            resample = Image.Resampling.BILINEAR
+        except AttributeError:
+            resample = Image.BILINEAR
+        im.thumbnail((max_edge, max_edge), resample)
+
+    buf = io.BytesIO()
+    q = TRANSFER_JPEG_QUALITY_START
+    best = jpeg_bytes
+    while q >= TRANSFER_JPEG_QUALITY_MIN:
+        buf.seek(0)
+        buf.truncate()
+        im.save(buf, format="JPEG", quality=q, optimize=True)
+        candidate = buf.getvalue()
+        if len(candidate) <= TRANSFER_JPEG_TARGET_BYTES or q == TRANSFER_JPEG_QUALITY_MIN:
+            best = candidate
+            break
+        q -= TRANSFER_JPEG_QUALITY_STEP
+        best = candidate
+
+    return best
+
 
 # -- Goggle Shared Class --
 class SharedClass:
@@ -194,8 +247,8 @@ class CameraClient:
                 stream = io.BytesIO()
                 self.camera.capture_file(stream, format='jpeg')
                 self.shared_class.data['picture'] = stream.getvalue()
-                print("Capture complete! Sending to iPhone...")
-                self.send_to_iphone()
+                print("Capture complete! Sending to client...")
+                self.send_captured_jpeg_to_client()
                 self.shared_class.mode = 'default'
             except Exception as e:
                 print(f"Camera Error: {e}")
@@ -203,12 +256,44 @@ class CameraClient:
             finally:
                 self.shared_class.shutter_event.clear()
 
-    def send_to_iphone(self):
+    def send_captured_jpeg_to_client(self):
+        """Push JPEG (or ready signal) over TCP using shared.current_app — no app-specific names here."""
         srv = self.shared_class.server
-        if srv is not None and srv.send_json({"event": "picture_ready"}):
-            print("Picture ready notification sent to iPhone")
-        else:
+        app = self.shared_class.current_app
+        if srv is None:
             print("Picture captured (no TCP client connected)")
+            return
+        pic = self.shared_class.data.get("picture")
+        if not pic:
+            if srv.send_json(
+                {"app": app, "event": "picture_ready", "format": "jpeg"}
+            ):
+                print("picture_ready sent (no image bytes in memory)")
+            else:
+                print("Picture captured (no TCP client connected)")
+            return
+        pic_send = compress_jpeg_for_transfer(pic)
+        if len(pic_send) != len(pic):
+            print(f"JPEG transfer profile: {len(pic)} -> {len(pic_send)} bytes")
+        b64 = base64.standard_b64encode(pic_send).decode("ascii")
+        payload = {
+            "app": app,
+            "event": "picture",
+            "format": "jpeg",
+            "image_b64": b64,
+            "byte_length": len(pic_send),
+            "source_bytes": len(pic),
+        }
+        try:
+            if srv.send_json(payload):
+                print(f"JPEG sent to client ({len(pic_send)} bytes wire payload)")
+            else:
+                print("Picture captured (no TCP client connected)")
+        except ValueError as e:
+            print(f"JPEG too large for one JSON frame ({e}); sending picture_ready only")
+            srv.send_json(
+                {"app": app, "event": "picture_ready", "format": "jpeg"}
+            )
 
     def video_loop(self):
         while self.running:
@@ -219,10 +304,10 @@ class CameraClient:
             while self.shared_class.video_event.is_set() and self.running:
                 pass
             print("Video recording stopped...")
-            self.send_video_to_iphone()
+            self.send_video_to_client()
 
-    def send_video_to_iphone(self):
-        print("Video sent to iPhone!")
+    def send_video_to_client(self):
+        print("Video sent to client!")
 
 # -- Goggle Button Class --
 class GoggleButton:

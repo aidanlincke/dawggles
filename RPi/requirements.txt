@@ -16,3 +16,4 @@ RPi.GPIO==0.7.1
 rpi_ws281x==5.0.0
 sysv_ipc==1.2.0
 typing_extensions==4.15.0
+Pillow>=10.0.0
