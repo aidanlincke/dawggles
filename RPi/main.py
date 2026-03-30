@@ -1,19 +1,18 @@
 """
 Dawggles Pi entry: Dynamic Wi-Fi Hotspot, then TCP.
 
-Debug snap over existing TCP client (second SSH shell on Pi):
-  export DAWGGLES_SIGUSR1_SNAP=1
+Setup the network FIRST:
+  export DAWGGLES_AP_PASSWORD="your-pin"
+  sudo -E ./network/setup_dawggles_hotspot.sh
+
+Then run:
   python3 main.py
-  # Mac: push_client connected + authenticated
-  kill -USR1 <pid>    # or: python3 trigger_snap_send.py
 
 Leave AP for CMU-DEVICE: sudo ./network/restore_cmu_wifi.sh
 """
 import logging
 import os
 import signal
-import subprocess
-import random
 import time
 
 from goggles_lib import CameraClient, Display, GoggleButton, Server, SharedClass
@@ -24,37 +23,20 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 CAMERA_CONFIG = {"size": (1280, 720)}
 
 
-def start_hotspot(pin: str):
-    script_path = os.path.join(os.path.dirname(__file__), "network", "setup_dawggles_hotspot.sh")
-    env = os.environ.copy()
-    env["DAWGGLES_AP_PASSWORD"] = pin
-    logging.info(f"Starting hotspot with PIN: {pin}...")
-    
-    # This script must be run with sudo!
-    result = subprocess.run(["sudo", "-E", script_path], env=env, capture_output=True, text=True)
-    if result.returncode != 0:
-        logging.error(f"Hotspot script failed:\n{result.stderr}")
-        raise SystemExit("Failed to start Wi-Fi hotspot.")
-    logging.info("Hotspot is up!")
-
-
 def main() -> None:
     shared = SharedClass()
     shared.display = Display(shared)
 
-    # 1. Generate 8-digit PIN for the hotspot
-    pin = f"{random.randint(0, 99999999):08d}"
+    # 1. Grab the PIN from the environment (set when you ran the hotspot script)
+    pin = os.environ.get("DAWGGLES_AP_PASSWORD", "Unknown")
     
     # 2. Show PIN on display for the user to type into the app
     shared.display.update_display({"status": "pairing", "pin": pin})
-    logging.info(f"\n====================================\nPAIRING PIN: {pin}\n====================================\n")
-
-    # 3. Start the Wi-Fi Hotspot
-    start_hotspot(pin)
+    logging.info(f"\n====================================\nAPP PAIRING PIN: {pin}\n====================================\n")
 
     shared.camera_client = CameraClient(shared, CAMERA_CONFIG)
 
-    # Listen on all interfaces so the phone can connect when it joins the hotspot
+    # Listen on all interfaces so the phone can connect
     bind_host = "0.0.0.0"
     
     shared.server = Server(shared, host=bind_host, port=12345, defer_listen=True)

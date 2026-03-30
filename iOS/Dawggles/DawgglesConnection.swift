@@ -13,7 +13,6 @@ class DawgglesConnection: NSObject, ObservableObject {
         
         let hotspotConfig = NEHotspotConfiguration(ssid: "Dawggles", passphrase: password, isWEP: false)
         hotspotConfig.joinOnce = true // Connect for this session, but don't auto-join in the background later
-        hotspotConfig.isHidden = true // We made the Pi network hidden!
         
         // This triggers the native Apple "Dawggles Wants to Join Wi-Fi Network 'Dawggles'?" popup
         NEHotspotConfigurationManager.shared.apply(hotspotConfig) { [weak self] error in
