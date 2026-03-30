@@ -1,0 +1,2 @@
+# iOS: no Python packages. Use Xcode → Swift Package Manager (or CocoaPods) for native deps.
+# Add SPM package URLs / versions here as comments when you wire CoreBluetooth + networking.
