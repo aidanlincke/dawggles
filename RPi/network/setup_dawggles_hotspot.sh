@@ -35,7 +35,12 @@ nmcli device wifi hotspot \
   ssid "$SSID" \
   password "$PASS" \
   con-name Dawggles-ap \
-  band bg
+  band bg \
+  hidden yes
+
+# Force the iPhone to use 5G for internet by preventing the Pi from acting as a gateway
+nmcli connection modify Dawggles-ap ipv4.never-default yes
+nmcli connection up Dawggles-ap
 
 IP=""
 IP=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1) || true

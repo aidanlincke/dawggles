@@ -1,5 +1,5 @@
 """
-Dawggles Pi entry: BLE pairing gate, then TCP on paired LAN IP only.
+Dawggles Pi entry: Dynamic Wi-Fi Hotspot, then TCP.
 
 Debug snap over existing TCP client (second SSH shell on Pi):
   export DAWGGLES_SIGUSR1_SNAP=1
@@ -7,16 +7,16 @@ Debug snap over existing TCP client (second SSH shell on Pi):
   # Mac: push_client connected + authenticated
   kill -USR1 <pid>    # or: python3 trigger_snap_send.py
 
-Dawggles Wi‑Fi AP (on Pi, from RPi/): sudo -E ./network/setup_dawggles_hotspot.sh
-Then export DAWGGLES_AP_INTERFACE=wlan0 or DAWGGLES_TCP_HOST=<AP IP> before main.py.
 Leave AP for CMU-DEVICE: sudo ./network/restore_cmu_wifi.sh
 """
 import logging
 import os
 import signal
+import subprocess
+import random
+import time
 
 from goggles_lib import CameraClient, Display, GoggleButton, Server, SharedClass
-from pairing.pi_ble_peripheral import run_ble_pairing_background, validate_pairing_environment
 from app_manager import start_app
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -24,32 +24,46 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 CAMERA_CONFIG = {"size": (1280, 720)}
 
 
+def start_hotspot(pin: str):
+    script_path = os.path.join(os.path.dirname(__file__), "network", "setup_dawggles_hotspot.sh")
+    env = os.environ.copy()
+    env["DAWGGLES_AP_PASSWORD"] = pin
+    logging.info(f"Starting hotspot with PIN: {pin}...")
+    
+    # This script must be run with sudo!
+    result = subprocess.run(["sudo", "-E", script_path], env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        logging.error(f"Hotspot script failed:\n{result.stderr}")
+        raise SystemExit("Failed to start Wi-Fi hotspot.")
+    logging.info("Hotspot is up!")
+
+
 def main() -> None:
     shared = SharedClass()
-
-    try:
-        validate_pairing_environment()
-        run_ble_pairing_background(shared)
-    except Exception as e:
-        raise SystemExit(
-            f"BLE setup failed ({e}). export DAWGGLES_PAIR_PASSWORD=… "
-            "and pip install -r requirements.txt"
-        ) from e
-
     shared.display = Display(shared)
+
+    # 1. Generate 8-digit PIN for the hotspot
+    pin = f"{random.randint(0, 99999999):08d}"
+    
+    # 2. Show PIN on display for the user to type into the app
+    shared.display.update_display({"status": "pairing", "pin": pin})
+    logging.info(f"\n====================================\nPAIRING PIN: {pin}\n====================================\n")
+
+    # 3. Start the Wi-Fi Hotspot
+    start_hotspot(pin)
+
     shared.camera_client = CameraClient(shared, CAMERA_CONFIG)
 
-    logging.info("waiting for BLE (Mac: python3 Mac/ble_pair.py)")
-    shared.tcp_bind_ready.wait()
-    bind_host = shared.paired_tcp_host
-    if not bind_host:
-        raise SystemExit("paired_tcp_host missing after BLE")
-
+    # Listen on all interfaces so the phone can connect when it joins the hotspot
+    bind_host = "0.0.0.0"
+    
     shared.server = Server(shared, host=bind_host, port=12345, defer_listen=True)
 
     shared.button = GoggleButton(
         shared_class=shared, pin=27, button_callback=None
     )
+    
+    # 4. Start the app and the TCP Server
     start_app("translation", shared, shared.button, shared.server)
     shared.server.start_listen()
 
