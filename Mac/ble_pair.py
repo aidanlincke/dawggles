@@ -4,13 +4,17 @@ BLE pairing: same password as DAWGGLES_PAIR_PASSWORD on the Pi → prints token 
 
   pip install -r Mac/requirements.txt
   python3 Mac/ble_pair.py
+  python3 Mac/ble_pair.py --scan                    # list devices (Pi often shows as None or raspberrypi)
+  python3 Mac/ble_pair.py AA:BB:CC:DD:EE:FF        # connect by address from --scan
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import getpass
 import json
 import os
+import sys
 
 from bleak import BleakClient, BleakScanner
 
@@ -51,14 +55,12 @@ def _parse_read_payload(raw: str) -> tuple[str | None, str | None]:
     return token, host
 
 
-async def _main() -> None:
-    pw = _password_bytes()
-    devices = await BleakScanner.discover(timeout=20.0)
-    found = next((d for d in devices if d.name and NAME_SUBSTRING in d.name), None)
-    if found is None:
-        raise SystemExit("no Dawggles device found")
+def _normalize_address(addr: str) -> str:
+    return addr.strip().replace("-", ":").upper()
 
-    async with BleakClient(found.address) as client:
+
+async def _pair(address: str, pw: bytes) -> None:
+    async with BleakClient(address) as client:
         try:
             await client.exchange_mtu(247)
         except Exception:
@@ -79,5 +81,91 @@ async def _main() -> None:
     print(f"python3 Mac/push_client.py {host}")
 
 
+async def _discover_devices(timeout: float):
+    """Unfiltered scan — service UUID filters often return nothing on macOS."""
+    devices = await BleakScanner.discover(timeout=timeout)
+    if not devices:
+        await asyncio.sleep(0.5)
+        devices = await BleakScanner.discover(timeout=timeout)
+    return devices
+
+
+async def _scan(timeout: float) -> None:
+    print(f"Scanning {timeout}s — unfiltered (all nearby LE devices)...\n")
+    devices = await _discover_devices(timeout)
+    if not devices:
+        print(
+            "No BLE devices at all.\n"
+            "  • macOS: System Settings → Privacy & Security → Bluetooth\n"
+            "    Turn ON for Terminal.app (or iTerm). If you run from Cursor, add Cursor too.\n"
+            "  • System Settings → Bluetooth: On.\n"
+            "  • Pi: Bluetooth up, python3 main.py running, pip install -r requirements.txt (bless).\n"
+        )
+        return
+    for d in sorted(devices, key=lambda x: (x.name or "", x.address)):
+        name = d.name if d.name else "(no name)"
+        print(f"  {d.address}  {name}")
+    print(
+        "\nThe Pi often does NOT show the name 'Dawggles' — look for (no name) or 'raspberrypi', "
+        "or match the Bluetooth MAC from the Pi (hciconfig / bluetoothctl list).\n"
+        "Then: python3 Mac/ble_pair.py <ADDRESS>"
+    )
+
+
+async def _main_async(args: argparse.Namespace) -> None:
+    if args.scan:
+        await _scan(args.timeout)
+        return
+
+    pw = _password_bytes()
+    address = args.address
+
+    if not address:
+        devices = await _discover_devices(args.timeout)
+        found = next(
+            (
+                d
+                for d in devices
+                if d.name and NAME_SUBSTRING.lower() in d.name.lower()
+            ),
+            None,
+        )
+        if found is None:
+            print(
+                "No device whose name contains 'Dawggles' "
+                f"(saw {len(devices)} other device(s)).\n"
+                "Run: python3 Mac/ble_pair.py --scan\n"
+                "Then: python3 Mac/ble_pair.py <ADDRESS>",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        address = found.address
+
+    await _pair(_normalize_address(address), pw)
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="BLE pair with Dawggles Pi")
+    p.add_argument(
+        "address",
+        nargs="?",
+        default=None,
+        help="BLE address from --scan (e.g. B8:27:EB:…)",
+    )
+    p.add_argument(
+        "--scan",
+        action="store_true",
+        help="List nearby devices and exit",
+    )
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=20.0,
+        help="Scan duration (seconds)",
+    )
+    args = p.parse_args()
+    asyncio.run(_main_async(args))
+
+
 if __name__ == "__main__":
-    asyncio.run(_main())
+    main()
