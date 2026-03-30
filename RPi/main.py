@@ -9,6 +9,7 @@ Debug snap over existing TCP client (second SSH shell on Pi):
 
 Dawggles Wi‑Fi AP (on Pi, from RPi/): sudo -E ./network/setup_dawggles_hotspot.sh
 Then export DAWGGLES_AP_INTERFACE=wlan0 or DAWGGLES_TCP_HOST=<AP IP> before main.py.
+Leave AP for CMU-DEVICE: sudo ./network/restore_cmu_wifi.sh
 """
 import logging
 import os

@@ -10,6 +10,8 @@
 # Then on the Pi before main.py:
 #   export DAWGGLES_AP_INTERFACE="${DAWGGLES_AP_IFACE:-wlan0}"
 # or set DAWGGLES_TCP_HOST to the printed AP IPv4.
+#
+# Switch back to CMU-DEVICE: see restore_cmu_wifi.sh
 
 set -euo pipefail
 
