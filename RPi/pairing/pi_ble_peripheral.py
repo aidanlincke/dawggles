@@ -99,41 +99,14 @@ def tcp_bind_ipv4() -> str:
 
 
 def _expected_password_bytes() -> bytes:
-    pw = os.environ.get("DAWGGLES_PAIR_PASSWORD")
-    if pw is not None:
-        raw = pw.encode("utf-8").strip()
-        if len(raw) > _MAX_PASSWORD_BYTES:
-            raise ValueError(
-                f"DAWGGLES_PAIR_PASSWORD must be <= {_MAX_PASSWORD_BYTES} UTF-8 bytes"
-            )
-        if not raw:
-            raise ValueError("DAWGGLES_PAIR_PASSWORD is empty")
-        return raw
-    pin = os.environ.get("DAWGGLES_PAIR_PIN", "000000").strip()[:6]
-    if len(pin) < 6:
-        pin = pin.ljust(6, "0")
-    b = pin.encode("utf-8")
-    if b == b"000000":
-        log.warning("using default PIN 000000 — set DAWGGLES_PAIR_PASSWORD for production")
-    return b
-
-
-def run_ble_pairing_background(shared: Any) -> None:
-    def runner() -> None:
-        try:
-            asyncio.run(_async_main(shared))
-        except Exception as e:
-            log.exception("BLE thread: %s", e)
-
-    threading.Thread(target=runner, name="DawgglesBLE", daemon=True).start()
-
+    # We no longer use a static BLE password because Wi-Fi WPA2 provides the security.
+    # The BLE server just waits for an empty knock from the phone.
+    return b""
 
 def validate_pairing_environment() -> None:
-    _expected_password_bytes()
-
+    pass
 
 async def _async_main(shared: Any) -> None:
-    expected = _expected_password_bytes()
     value = bytearray(b"WAIT")
 
     def read_request(characteristic: Any, **kwargs: Any) -> bytearray:
@@ -141,34 +114,18 @@ async def _async_main(shared: Any) -> None:
 
     def write_request(characteristic: Any, data: bytearray, **kwargs: Any) -> bytearray:
         nonlocal value
-        got = bytes(data).strip()
-        if len(got) > _MAX_PASSWORD_BYTES:
-            value = bytearray(b"BADPIN")
-            characteristic.value = value
-            log.warning("ble: password too long")
-            return characteristic.value
-        if got == expected:
-            ip = tcp_bind_ipv4()
-            if ip == "?":
-                value = bytearray(b"NOIP")
-                characteristic.value = value
-                log.warning("ble: no LAN IPv4")
-                return characteristic.value
-            token = secrets.token_hex(16)
-            payload = json.dumps({"t": token, "h": ip}, separators=(",", ":")).encode(
-                "ascii"
-            )
-            value = bytearray(payload)
-            characteristic.value = value
-            shared.tcp_auth_token = token
-            if not shared.tcp_bind_ready.is_set():
-                shared.paired_tcp_host = ip
-                shared.tcp_bind_ready.set()
-            log.info("ble paired tcp=%s:12345", ip)
-        else:
-            value = bytearray(b"BADPIN")
-            characteristic.value = value
-            log.warning("ble: wrong password")
+        
+        # When ANY BLE connection / write is attempted, wake up the OLED to show the PIN!
+        shared.display.update_display({"status": "pairing_pin"})
+        log.info("ble: Received knock from phone! Waking up OLED to show Wi-Fi PIN.")
+        
+        # Send a success message back so the phone knows the knock worked
+        value = bytearray(b"KNOCK_ACK")
+        characteristic.value = value
+        
+        # We don't actually need to set the tcp_bind_ready event anymore because 
+        # main.py is just waiting for a TCP connection on 0.0.0.0
+        
         return characteristic.value
 
     loop = asyncio.get_running_loop()

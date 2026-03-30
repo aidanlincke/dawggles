@@ -35,9 +35,9 @@ struct ContentView: View {
                 // Dismiss keyboard
                 UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                 
-                connection.connect(password: password)
+                connection.connectToWiFi(password: password)
             }) {
-                Text("Connect via Bluetooth")
+                Text("Join Dawggles Wi-Fi")
                     .bold()
                     .frame(maxWidth: .infinity)
                     .padding()

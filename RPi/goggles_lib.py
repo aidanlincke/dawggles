@@ -347,15 +347,25 @@ class Display:
             log.warning(f"OLED init failed, continuing without display: {e}")
             self.hardware_available = False
     
-    def _render_text(self, message: str, color: int = 1):
+    def _render_text(self, lines: list, color: int = 1):
         if not self.hardware_available:
             return
         try:
             self.oled.fill(0)
-            tw = len(message) * 8
-            tx = max(0, (self.oled.width - tw) // 2)
-            ty = max(0, (self.oled.height - 8) // 2)
-            self.oled.text(message, tx, ty, color)
+            
+            # Support both a single string or a list of strings
+            if isinstance(lines, str):
+                lines = [lines]
+                
+            total_height = len(lines) * 10 # 8px font + 2px padding
+            start_y = max(0, (self.oled.height - total_height) // 2)
+            
+            for i, line in enumerate(lines):
+                tw = len(line) * 8
+                tx = max(0, (self.oled.width - tw) // 2)
+                ty = start_y + (i * 10)
+                self.oled.text(line, tx, ty, color)
+                
             self.oled.show()
         except Exception as e:
             log.warning(f"OLED render failed: {e}")
@@ -364,10 +374,11 @@ class Display:
         with self.display_lock:
             self.display_data.update(data)
             
-            # If we are in pairing mode, show the PIN
-            if self.display_data.get("status") == "pairing":
+            if self.display_data.get("status") == "pairing_idle":
+                self._render_text("PAIR IN APP")
+            elif self.display_data.get("status") == "pairing_pin":
                 pin = self.display_data.get("pin", "")
-                self._render_text(f"PIN: {pin}")
+                self._render_text(["ENTER PIN:", "", f"{pin}"])
             # If connected, maybe show the app name
             elif self.display_data.get("app"):
                 app_name = self.display_data.get("app").upper()
