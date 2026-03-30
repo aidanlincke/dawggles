@@ -103,6 +103,15 @@ def _expected_password_bytes() -> bytes:
     # The BLE server just waits for an empty knock from the phone.
     return b""
 
+def run_ble_pairing_background(shared: Any) -> None:
+    def runner() -> None:
+        try:
+            asyncio.run(_async_main(shared))
+        except Exception as e:
+            log.exception("BLE thread: %s", e)
+
+    threading.Thread(target=runner, name="DawgglesBLE", daemon=True).start()
+
 def validate_pairing_environment() -> None:
     pass
 
