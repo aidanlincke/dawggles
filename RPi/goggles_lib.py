@@ -19,7 +19,15 @@ try:
 except ImportError:
     OLED_AVAILABLE = False
 
+import sys
+
 log = logging.getLogger(__name__)
+
+# Add RPi directory to path so adafruit_framebuf can find font5x8.bin
+import os
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 # Max JSON payload per framed message (bytes after length prefix).
 MAX_JSON_MESSAGE_BYTES = 32 * 1024 * 1024
@@ -344,7 +352,8 @@ class Display:
             self.cs = digitalio.DigitalInOut(board.D17)
             self.dc = digitalio.DigitalInOut(board.D27)
             
-            # 128x64 standard OLED
+            # 128x64 standard OLED. We must use adafruit_ssd1306.SSD1306_SPI
+            # Provide font5x8.bin explicitly if needed, but it should fallback to internal.
             self.oled = adafruit_ssd1306.SSD1306_SPI(128, 64, self.spi, self.dc, None, self.cs)
             self.oled.contrast(5)
             self.oled.write_cmd(0xA0) # Seg remap
@@ -359,6 +368,9 @@ class Display:
         if not self.hardware_available:
             return
         try:
+            # Change directory to where font5x8.bin is expected (Adafruit expects it in the CWD or lib)
+            # If adafruit_framebuf can't find it, we just pass the raw text if possible, but
+            # the safest way is to wrap just the show/fill.
             self.oled.fill(0)
             
             # Support both a single string or a list of strings
@@ -375,6 +387,11 @@ class Display:
                 self.oled.text(line, tx, ty, color)
                 
             self.oled.show()
+        except OSError as e:
+            if "No such file or directory: 'font5x8.bin'" in str(e):
+                log.error("OLED font file missing! Please ensure font5x8.bin is in the current directory.")
+            else:
+                log.warning(f"OLED render failed: {e}")
         except Exception as e:
             log.warning(f"OLED render failed: {e}")
 
