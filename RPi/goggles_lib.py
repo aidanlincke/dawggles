@@ -10,10 +10,14 @@ from threading import Event, Lock, Thread, Timer
 from gpiozero import Button as GPIOButton
 from picamera2 import Picamera2
 
-import board
-import busio
-import digitalio
-import adafruit_ssd1306
+try:
+    import board
+    import busio
+    import digitalio
+    import adafruit_ssd1306
+    OLED_AVAILABLE = True
+except ImportError:
+    OLED_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -330,6 +334,10 @@ class Display:
         self.display_data = {}  # Store current display state
         self.display_lock = Lock()
         
+        if not OLED_AVAILABLE:
+            log.warning("OLED libraries (board, busio) not found. Display will print to terminal instead.")
+            return
+
         # Initialize hardware OLED
         try:
             self.spi = busio.SPI(board.SCK, MOSI=board.MOSI)
