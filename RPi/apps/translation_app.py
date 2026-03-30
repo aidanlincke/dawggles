@@ -77,6 +77,16 @@ def translation_message_handler(shared_class, message):
         shared_class.server.send_json({"_dawggles_pong": True})
         return
 
+    # Remote shutter (Mac / iOS): same path as the physical button in default mode
+    if message.get("dawggles_shutter") is True:
+        if shared_class.current_app != "translation":
+            return
+        if shared_class.mode != "default":
+            return
+        shared_class.mode = "capturing"
+        shared_class.shutter_event.set()
+        return
+
     if "app" in message and message["app"] != shared_class.current_app:
         from app_manager import start_app
 

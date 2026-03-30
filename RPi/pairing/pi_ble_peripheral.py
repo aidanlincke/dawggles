@@ -136,6 +136,25 @@ async def _async_main(shared: Any) -> None:
         bytearray(b"WAIT"),
         perms,
     )
-    await server.start()
+    try:
+        await server.start()
+    except Exception as e:
+        _advertise_failed_hint(e)
+        raise
     log.info("ble advertising %s", ADVERTISE_NAME)
     await asyncio.Event().wait()
+
+
+def _advertise_failed_hint(err: Exception) -> None:
+    log.error("BLE advertisement failed: %s", err)
+    print(
+        "\n*** BLE: failed to register advertisement (BlueZ) ***\n"
+        "  1) sudo bluetoothctl power on\n"
+        "  2) sudo rfkill unblock bluetooth\n"
+        "  3) sudo systemctl restart bluetooth\n"
+        "  4) Unplug other BLE tools using the adapter; only one advertiser at a time.\n"
+        "  5) Retry; if still failing, test once with root (keeps your env):\n"
+        "       sudo -E $(which python3) main.py\n"
+        "     Or add user to group: sudo usermod -aG bluetooth $USER  (then log out/in)\n",
+        flush=True,
+    )

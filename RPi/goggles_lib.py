@@ -97,7 +97,14 @@ class Server:
     The phone must use the same framing when sending; use send_json() when pushing from the Pi.
     """
 
-    def __init__(self, shared_class, host="127.0.0.1", port=12345, message_handler=None):
+    def __init__(
+        self,
+        shared_class,
+        host="127.0.0.1",
+        port=12345,
+        message_handler=None,
+        defer_listen=False,
+    ):
         self.shared_class = shared_class
         self.host = host
         self.port = port
@@ -109,6 +116,13 @@ class Server:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(1)
+        self.thread = None
+        if not defer_listen:
+            self.start_listen()
+
+    def start_listen(self):
+        if self.thread is not None:
+            return
         self.thread = Thread(target=self._listen_loop, daemon=True)
         self.thread.start()
 
@@ -276,7 +290,7 @@ class CameraClient:
         }
         try:
             if not srv.send_json(payload):
-                pass
+                log.warning("picture: send_json failed (no tcp client?)")
         except ValueError:
             srv.send_json({"app": app, "event": "picture_ready", "format": "jpeg"})
 

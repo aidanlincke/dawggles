@@ -1,9 +1,15 @@
 """
 Dawggles Pi entry: BLE pairing gate, then TCP on paired LAN IP only.
+
+Debug snap over existing TCP client (second SSH shell on Pi):
+  export DAWGGLES_SIGUSR1_SNAP=1
+  python3 main.py
+  # Mac: push_client connected + authenticated
+  kill -USR1 <pid>    # or: python3 trigger_snap_send.py
 """
 import logging
-import time
-from threading import Thread
+import os
+import signal
 
 from goggles_lib import CameraClient, Display, GoggleButton, Server, SharedClass
 from pairing.pi_ble_peripheral import run_ble_pairing_background, validate_pairing_environment
@@ -13,8 +19,6 @@ from app_manager import start_app
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 CAMERA_CONFIG = {"size": (1280, 720)}
-AUTO_CAPTURE_ON_START = True
-AUTO_CAPTURE_WARMUP_SEC = 2
 
 
 def main() -> None:
@@ -38,21 +42,36 @@ def main() -> None:
     if not bind_host:
         raise SystemExit("paired_tcp_host missing after BLE")
 
-    shared.server = Server(shared, host=bind_host, port=12345)
+    shared.server = Server(shared, host=bind_host, port=12345, defer_listen=True)
 
     shared.button = GoggleButton(
         shared_class=shared, pin=27, button_callback=translation_button_callback
     )
     start_app("translation", shared, shared.button, shared.server)
+    shared.server.start_listen()
 
-    if AUTO_CAPTURE_ON_START:
+    _env_snap = os.environ.get("DAWGGLES_SIGUSR1_SNAP", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
-        def _auto_capture() -> None:
-            time.sleep(AUTO_CAPTURE_WARMUP_SEC)
-            shared.mode = "capturing"
-            shared.shutter_event.set()
+    def _sigusr1_snap(_signum, _frame):
+        cc = shared.camera_client
+        if not cc or not cc.running:
+            logging.warning("SIGUSR1: camera capture loop not running")
+            return
+        shared.shutter_event.set()
+        logging.info("SIGUSR1: capture + send to TCP client")
 
-        Thread(target=_auto_capture, daemon=True).start()
+    if _env_snap:
+        signal.signal(signal.SIGUSR1, _sigusr1_snap)
+        logging.info(
+            "DAWGGLES_SIGUSR1_SNAP: run  kill -USR1 %s  or  python3 trigger_snap_send.py",
+            os.getpid(),
+        )
+    else:
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
 
     try:
         while True:
