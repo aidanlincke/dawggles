@@ -128,12 +128,17 @@ async def _async_main(shared: Any) -> None:
         shared.display.update_display({"status": "pairing_pin"})
         log.info("ble: Received knock from phone! Waking up OLED to show Wi-Fi PIN.")
         
-        # Send a success message back so the phone knows the knock worked
-        value = bytearray(b"KNOCK_ACK")
+        ip = tcp_bind_ipv4()
+        if ip == "?":
+            value = bytearray(b"NOIP")
+            characteristic.value = value
+            log.warning("ble: no LAN IPv4")
+            return characteristic.value
+            
+        # SUCCESS! Send back IP address so the phone knows where to connect the TCP socket.
+        payload = json.dumps({"h": ip}, separators=(",", ":")).encode("ascii")
+        value = bytearray(payload)
         characteristic.value = value
-        
-        # We don't actually need to set the tcp_bind_ready event anymore because 
-        # main.py is just waiting for a TCP connection on 0.0.0.0
         
         return characteristic.value
 

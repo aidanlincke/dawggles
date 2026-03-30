@@ -44,9 +44,7 @@ class SharedClass:
     self.shutter_event = Event()
     self.video_event = Event()
     self.display_lock = Lock()
-    # From BLE on Pi. When set, first inbound TCP JSON must include auth_token.
-    self.tcp_auth_token = None  # str | None
-    # Set by pairing after BLE password OK; main() waits before binding TCP.
+    # Set by pairing after BLE knock; main() waits before binding TCP.
     self.paired_tcp_host = None  # str | None — Pi LAN IP to bind (never 0.0.0.0 in production)
     self.tcp_bind_ready = Event()
 
@@ -155,8 +153,6 @@ class Server:
 
     def _client_loop(self, client_socket, addr):
         sc = self.shared_class
-        token = getattr(sc, "tcp_auth_token", None)
-        auth_ok = token is None
         try:
             while True:
                 header = self._recv_exact(client_socket, 4)
@@ -170,16 +166,6 @@ class Server:
                     break
                 if not isinstance(message, dict):
                     break
-                if not auth_ok:
-                    # Backward compatibility for BLE tokens if someone forces it,
-                    # otherwise skip auth checking since Wi-Fi WPA2 is the security layer.
-                    if token and message.get("auth_token") != token:
-                        log.warning("tcp auth failed")
-                        break
-                    auth_ok = True
-                    message.pop("auth_token", None)
-                    if not message:
-                        continue
                 
                 # Push to worker thread so network loop isn't blocked
                 self.message_queue.put(message)
