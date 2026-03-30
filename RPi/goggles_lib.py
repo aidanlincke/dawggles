@@ -154,7 +154,9 @@ class Server:
                 if not isinstance(message, dict):
                     break
                 if not auth_ok:
-                    if message.get("auth_token") != token:
+                    # Backward compatibility for BLE tokens if someone forces it,
+                    # otherwise skip auth checking since Wi-Fi WPA2 is the security layer.
+                    if token and message.get("auth_token") != token:
                         log.warning("tcp auth failed")
                         break
                     auth_ok = True
