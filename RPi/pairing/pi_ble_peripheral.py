@@ -3,6 +3,11 @@ Pi: BLE GATT — Mac writes password (UTF-8), reads JSON {"t": token, "h": lan_i
 
   export DAWGGLES_PAIR_PASSWORD='...'
   pip install -r requirements.txt
+
+  Dawggles Wi‑Fi hotspot (see network/setup_dawggles_hotspot.sh), then either:
+    export DAWGGLES_AP_INTERFACE=wlan0
+  or pin the AP IP:
+    export DAWGGLES_TCP_HOST=10.42.0.1
 """
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ import logging
 import os
 import secrets
 import socket
+import struct
 import threading
 from typing import Any
 
@@ -45,6 +51,51 @@ def primary_lan_ipv4() -> str:
                 s.close()
             except OSError:
                 pass
+
+
+def _ipv4_for_interface_linux(ifname: str) -> str | None:
+    """Best-effort Linux SIOCGIFADDR (Pi AP / wlan0). Returns None if unavailable."""
+    if not ifname or len(ifname) >= 256:
+        return None
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        packed = fcntl.ioctl(
+            s.fileno(),
+            0x8915,  # SIOCGIFADDR
+            struct.pack("256s", ifname.encode("utf-8")[:15]),
+        )
+        ip = socket.inet_ntoa(packed[20:24])
+        if ip.startswith("127."):
+            return None
+        return ip
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def tcp_bind_ipv4() -> str:
+    """
+    Address advertised over BLE and used to bind TCP.
+
+    Env (Pi):
+      DAWGGLES_TCP_HOST=192.168.4.1   — fixed IP (e.g. your AP address)
+      DAWGGLES_AP_INTERFACE=wlan0     — use this interface's IPv4 (hotspot/AP)
+    If unset, falls back to primary_lan_ipv4() (default route trick).
+    """
+    host = os.environ.get("DAWGGLES_TCP_HOST", "").strip()
+    if host and host != "?" and not host.startswith("127."):
+        return host
+    iface = os.environ.get("DAWGGLES_AP_INTERFACE", "").strip()
+    if iface:
+        ip = _ipv4_for_interface_linux(iface)
+        if ip:
+            return ip
+    return primary_lan_ipv4()
 
 
 def _expected_password_bytes() -> bytes:
@@ -97,7 +148,7 @@ async def _async_main(shared: Any) -> None:
             log.warning("ble: password too long")
             return characteristic.value
         if got == expected:
-            ip = primary_lan_ipv4()
+            ip = tcp_bind_ipv4()
             if ip == "?":
                 value = bytearray(b"NOIP")
                 characteristic.value = value

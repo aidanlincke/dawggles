@@ -6,6 +6,9 @@ Debug snap over existing TCP client (second SSH shell on Pi):
   python3 main.py
   # Mac: push_client connected + authenticated
   kill -USR1 <pid>    # or: python3 trigger_snap_send.py
+
+Dawggles Wi‑Fi AP (on Pi, from RPi/): sudo -E ./network/setup_dawggles_hotspot.sh
+Then export DAWGGLES_AP_INTERFACE=wlan0 or DAWGGLES_TCP_HOST=<AP IP> before main.py.
 """
 import logging
 import os
