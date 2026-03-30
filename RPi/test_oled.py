@@ -11,6 +11,19 @@ import digitalio
 import adafruit_ssd1306
 import time
 
+# SSD1306 command: segment remap (horizontal flip vs driver default 0xA1)
+_SET_SEG_REMAP_A0 = 0xA0
+
+
+def display_text(disp, message: str, color: int = 1) -> None:
+    """Center a string with the framebuffer 8x8 font."""
+    disp.fill(0)
+    tw = len(message) * 8
+    tx = max(0, (disp.width - tw) // 2)
+    ty = max(0, (disp.height - 8) // 2)
+    disp.text(message, tx, ty, color)
+    disp.show()
+
 # 1. Initialize the Hardware SPI bus
 # board.SCK automatically uses GPIO 11 (Physical Pin 23)
 # board.MOSI automatically uses GPIO 10 (Physical Pin 19)
@@ -27,22 +40,16 @@ reset = None
 display = adafruit_ssd1306.SSD1306_SPI(128, 64, spi, dc, reset, cs)
 
 # --- LET'S TEST IT! ---
-print("Initializing display...")
+print("Dawggles text, contrast=5, SEG remap 0xA0. Ctrl+C to stop.")
 
-# Clear the display (fill with black)
-display.fill(0)
-display.show()
-time.sleep(0.5)
+display.contrast(5)
+display.write_cmd(_SET_SEG_REMAP_A0)
+display_text(display, "DAWGGLES")
 
-# Fill the entire screen with white pixels
-print("Flashing screen white...")
-display.fill(1)
-display.show()
-time.sleep(1)
-
-# Clear it again to black
-print("Clearing screen...")
-display.fill(0)
-display.show()
-
-print("Done! If your screen just flashed white, your SPI wiring is perfect!")
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    display.fill(0)
+    display.show()
+    print("Exiting.")
