@@ -109,7 +109,6 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Duplex framed JSON to Dawggles Pi.")
     p.add_argument("host")
     p.add_argument("--port", type=int, default=12345)
-    p.add_argument("--auth", default=None, help="or DAWGGLES_TCP_AUTH_TOKEN")
     p.add_argument("--save-dir", default="dawggles_incoming")
     p.add_argument(
         "-v", "--verbose", action="store_true", help="log non-JPEG JSON to stderr"
@@ -119,10 +118,7 @@ def main() -> None:
     save_dir = os.path.abspath(args.save_dir)
     print(f"push_client: saving JPEGs under {save_dir}", file=sys.stderr, flush=True)
 
-    token = args.auth or os.environ.get("DAWGGLES_TCP_AUTH_TOKEN")
     sock = socket.create_connection((args.host, args.port))
-    if token:
-        send_framed_json(sock, {"auth_token": token})
 
     stop = threading.Event()
     t = threading.Thread(
