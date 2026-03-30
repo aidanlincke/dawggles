@@ -42,18 +42,19 @@ def _password_bytes() -> bytes:
     return raw
 
 
-def _parse_read_payload(raw: str) -> tuple[str | None, str | None]:
-    token, host = None, None
+def _parse_read_payload(raw: str) -> str | None:
+    host = None
     if raw and raw not in ("WAIT", "BADPIN", "NOIP"):
         try:
             o = json.loads(raw)
             if isinstance(o, dict):
-                token, host = o.get("t"), o.get("h")
+                host = o.get("h")
         except json.JSONDecodeError:
             pass
-    if token is None and raw not in ("WAIT", "BADPIN", "NOIP", "") and raw:
-        token, host = raw, None
-    return token, host
+    # fallback if they just sent a raw string
+    if host is None and raw not in ("WAIT", "BADPIN", "NOIP", "") and raw:
+        host = raw
+    return host
 
 
 def _normalize_address(addr: str) -> str:
@@ -76,16 +77,15 @@ async def _pair(device: BLEDevice, pw: bytes) -> None:
         await asyncio.sleep(0.35)
         data = await client.read_gatt_char(PAIR_CHAR_UUID)
     raw = bytes(data).decode("utf-8", errors="replace").strip()
-    token, host = _parse_read_payload(raw)
+    host = _parse_read_payload(raw)
 
     if raw == "NOIP":
         raise SystemExit("Pi has no LAN IP yet")
-    if not token:
-        raise SystemExit(f"pairing failed ({raw!r})")
 
-    host = host or "<PI_IP>"
-    print(f"export DAWGGLES_TCP_AUTH_TOKEN='{token}'")
-    print(f"python3 Mac/push_client.py {host}")
+    if not host:
+        host = "<PI_IP>"
+        
+    print(f"python3 push_client.py {host}")
 
 
 async def _discover_devices(timeout: float):
@@ -182,7 +182,7 @@ def main() -> None:
     p.add_argument(
         "--timeout",
         type=float,
-        default=20.0,
+        default=5.0,
         help="Scan duration (seconds)",
     )
     args = p.parse_args()
