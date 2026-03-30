@@ -17,6 +17,7 @@ import os
 import sys
 
 from bleak import BleakClient, BleakScanner
+from bleak.backends.device import BLEDevice
 
 PAIR_CHAR_UUID = "0000d101-0000-1000-8000-00805f9b34fb"
 NAME_SUBSTRING = "Dawggles"
@@ -59,8 +60,14 @@ def _normalize_address(addr: str) -> str:
     return addr.strip().replace("-", ":").upper()
 
 
-async def _pair(address: str, pw: bytes) -> None:
-    async with BleakClient(address) as client:
+def _same_ble_id(a: str, b: str) -> bool:
+    return _normalize_address(a) == _normalize_address(b)
+
+
+async def _pair(device: BLEDevice, pw: bytes) -> None:
+    # macOS: pass BLEDevice from the scan. A UUID string alone makes Bleak
+    # re-scan via find_device_by_address and often raises BleakDeviceNotFoundError.
+    async with BleakClient(device) as client:
         try:
             await client.exchange_mtu(247)
         except Exception:
@@ -112,6 +119,10 @@ async def _scan(timeout: float) -> None:
     )
 
 
+def _device_by_address(devices: list[BLEDevice], address: str) -> BLEDevice | None:
+    return next((d for d in devices if _same_ble_id(d.address, address)), None)
+
+
 async def _main_async(args: argparse.Namespace) -> None:
     if args.scan:
         await _scan(args.timeout)
@@ -120,8 +131,20 @@ async def _main_async(args: argparse.Namespace) -> None:
     pw = _password_bytes()
     address = args.address
 
-    if not address:
-        devices = await _discover_devices(args.timeout)
+    devices = await _discover_devices(args.timeout)
+
+    if address:
+        found = _device_by_address(devices, address)
+        if found is None:
+            print(
+                f"No device matching address {address!r} in this scan "
+                f"({len(devices)} device(s)).\n"
+                "Run: python3 Mac/ble_pair.py --scan\n"
+                "Then copy the full address (macOS shows a UUID, not a MAC).",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+    else:
         found = next(
             (
                 d
@@ -139,9 +162,8 @@ async def _main_async(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             raise SystemExit(1)
-        address = found.address
 
-    await _pair(_normalize_address(address), pw)
+    await _pair(found, pw)
 
 
 def main() -> None:

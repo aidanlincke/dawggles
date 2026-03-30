@@ -116,6 +116,9 @@ def main() -> None:
     )
     args = p.parse_args()
 
+    save_dir = os.path.abspath(args.save_dir)
+    print(f"push_client: saving JPEGs under {save_dir}", file=sys.stderr, flush=True)
+
     token = args.auth or os.environ.get("DAWGGLES_TCP_AUTH_TOKEN")
     sock = socket.create_connection((args.host, args.port))
     if token:
@@ -124,10 +127,15 @@ def main() -> None:
     stop = threading.Event()
     t = threading.Thread(
         target=recv_loop,
-        args=(sock, args.save_dir, stop, args.verbose),
+        args=(sock, save_dir, stop, args.verbose),
         daemon=True,
     )
     t.start()
+    print(
+        'push_client: connected; type JSON + Enter (e.g. {"dawggles_shutter":true}), empty line to quit',
+        file=sys.stderr,
+        flush=True,
+    )
     try:
         stdin_loop(sock)
     finally:
