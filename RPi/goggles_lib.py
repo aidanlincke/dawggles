@@ -10,6 +10,11 @@ from threading import Event, Lock, Thread, Timer
 from gpiozero import Button as GPIOButton
 from picamera2 import Picamera2
 
+import board
+import busio
+import digitalio
+import adafruit_ssd1306
+
 log = logging.getLogger(__name__)
 
 # Max JSON payload per framed message (bytes after length prefix).
@@ -324,14 +329,56 @@ class Display:
     def __init__(self, shared_class):
         self.display_data = {}  # Store current display state
         self.display_lock = Lock()
+        
+        # Initialize hardware OLED
+        try:
+            self.spi = busio.SPI(board.SCK, MOSI=board.MOSI)
+            self.cs = digitalio.DigitalInOut(board.D17)
+            self.dc = digitalio.DigitalInOut(board.D27)
+            
+            # 128x64 standard OLED
+            self.oled = adafruit_ssd1306.SSD1306_SPI(128, 64, self.spi, self.dc, None, self.cs)
+            self.oled.contrast(5)
+            self.oled.write_cmd(0xA0) # Seg remap
+            self.oled.fill(0)
+            self.oled.show()
+            self.hardware_available = True
+        except Exception as e:
+            log.warning(f"OLED init failed, continuing without display: {e}")
+            self.hardware_available = False
     
+    def _render_text(self, message: str, color: int = 1):
+        if not self.hardware_available:
+            return
+        try:
+            self.oled.fill(0)
+            tw = len(message) * 8
+            tx = max(0, (self.oled.width - tw) // 2)
+            ty = max(0, (self.oled.height - 8) // 2)
+            self.oled.text(message, tx, ty, color)
+            self.oled.show()
+        except Exception as e:
+            log.warning(f"OLED render failed: {e}")
+
     def update_display(self, data):
         with self.display_lock:
             self.display_data.update(data)
+            
+            # If we are in pairing mode, show the PIN
+            if self.display_data.get("status") == "pairing":
+                pin = self.display_data.get("pin", "")
+                self._render_text(f"PIN: {pin}")
+            # If connected, maybe show the app name
+            elif self.display_data.get("app"):
+                app_name = self.display_data.get("app").upper()
+                self._render_text(f"{app_name}")
 
     def reset_display(self):
         with self.display_lock:
             self.display_data = {}
+            if self.hardware_available:
+                self.oled.fill(0)
+                self.oled.show()
     
     def get_display_data(self):
         """Get current display data"""
