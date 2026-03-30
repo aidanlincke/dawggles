@@ -1,3 +1,4 @@
+# --- Display / GPIO stack (from prior lock / Adafruit) ---
 Adafruit-Blinka==8.69.0
 Adafruit-Blinka-Raspberry-Pi5-Neopixel==1.0.0rc2
 adafruit-circuitpython-busdevice==5.2.15
@@ -16,4 +17,12 @@ RPi.GPIO==0.7.1
 rpi_ws281x==5.0.0
 sysv_ipc==1.2.0
 typing_extensions==4.15.0
+
+# --- Dawggles (camera, button, TCP, JPEG) ---
 Pillow>=10.0.0
+gpiozero>=2.0
+picamera2>=0.3.12
+
+# --- BLE peripheral (pairing) — may need BlueZ / dbus permissions ---
+bless>=0.2.6
+dbus-next>=0.2.0

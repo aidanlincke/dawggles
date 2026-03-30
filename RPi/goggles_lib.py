@@ -1,9 +1,16 @@
 import base64
 import io
 import json
+import logging
 import socket
 import struct
-from threading import Lock, Timer, Event, Thread
+from threading import Event, Lock, Thread, Timer
+
+from gpiozero import Button as GPIOButton
+from picamera2 import Picamera2
+from PIL import Image
+
+log = logging.getLogger(__name__)
 
 # Max JSON payload per framed message (bytes after length prefix).
 MAX_JSON_MESSAGE_BYTES = 32 * 1024 * 1024
@@ -17,17 +24,7 @@ TRANSFER_JPEG_TARGET_BYTES = 400_000
 
 
 def compress_jpeg_for_transfer(jpeg_bytes: bytes) -> bytes:
-    """
-    Downscale and re-encode JPEG before sending to the TCP client. Keeps full-res capture in memory
-    only until this returns; caller decides what to store.
-
-    Uses Pillow if installed; otherwise returns input unchanged.
-    """
-    try:
-        from PIL import Image
-    except ImportError:
-        return jpeg_bytes
-
+    """Downscale/re-encode with Pillow; on error return original bytes."""
     try:
         im = Image.open(io.BytesIO(jpeg_bytes))
         im = im.convert("RGB")
@@ -73,14 +70,18 @@ class SharedClass:
     self.shutter_event = Event()
     self.video_event = Event()
     self.display_lock = Lock()
-  
+    # From BLE on Pi. When set, first inbound TCP JSON must include auth_token.
+    self.tcp_auth_token = None  # str | None
+    # Set by pairing after BLE password OK; main() waits before binding TCP.
+    self.paired_tcp_host = None  # str | None — Pi LAN IP to bind (never 0.0.0.0 in production)
+    self.tcp_bind_ready = Event()
+
   def switch_app(self, app_name):
     """Switch to a different app"""
     self.current_app = app_name
     self.mode = 'default'  # Reset to default mode for new app
     self.data = {}  # Reset data for new app
-    self.display.reset_display()  # Reset display
-    print(f"Switched to app: {app_name}")
+    self.display.reset_display()
   
   def reset_app_data(self, app_name):
     """Reset data for a specific app (if needed)"""
@@ -96,7 +97,14 @@ class Server:
     The phone must use the same framing when sending; use send_json() when pushing from the Pi.
     """
 
-    def __init__(self, shared_class, host='0.0.0.0', port=12345, message_handler=None):
+    def __init__(
+        self,
+        shared_class,
+        host="127.0.0.1",
+        port=12345,
+        message_handler=None,
+        defer_listen=False,
+    ):
         self.shared_class = shared_class
         self.host = host
         self.port = port
@@ -108,6 +116,13 @@ class Server:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(1)
+        self.thread = None
+        if not defer_listen:
+            self.start_listen()
+
+    def start_listen(self):
+        if self.thread is not None:
+            return
         self.thread = Thread(target=self._listen_loop, daemon=True)
         self.thread.start()
 
@@ -154,48 +169,50 @@ class Server:
                 sock.sendall(frame)
                 return True
             except OSError as e:
-                print(f"send_json failed: {e}")
+                log.warning("send_json: %s", e)
                 return False
 
     def _client_loop(self, client_socket, addr):
-        print(f"Session started with {addr}")
+        sc = self.shared_class
+        token = getattr(sc, "tcp_auth_token", None)
+        auth_ok = token is None
         try:
             while True:
                 header = self._recv_exact(client_socket, 4)
                 (length,) = struct.unpack("!I", header)
                 if length == 0 or length > MAX_JSON_MESSAGE_BYTES:
-                    print(f"Invalid message length: {length}")
                     break
                 raw = self._recv_exact(client_socket, length)
                 try:
                     message = json.loads(raw.decode("utf-8"))
                 except json.JSONDecodeError:
-                    print("Invalid JSON in framed message")
                     break
                 if not isinstance(message, dict):
-                    print("Expected JSON object at top level")
                     break
+                if not auth_ok:
+                    if message.get("auth_token") != token:
+                        log.warning("tcp auth failed")
+                        break
+                    auth_ok = True
+                    message.pop("auth_token", None)
+                    if not message:
+                        continue
                 if self.message_handler:
                     self.message_handler(self.shared_class, message)
-                else:
-                    print("No message handler provided")
-        except ConnectionError as e:
-            print(f"Client {addr} disconnected: {e}")
-        except OSError as e:
-            print(f"Client {addr} socket error: {e}")
+        except (ConnectionError, OSError):
+            pass
         finally:
             self._clear_client_if(client_socket)
             try:
                 client_socket.close()
             except OSError:
                 pass
-            print(f"Session ended with {addr}")
 
     def _listen_loop(self):
         while True:
             try:
                 client_socket, addr = self.server_socket.accept()
-                print(f"Connection from {addr}")
+                log.info("tcp client %s", addr)
                 self._replace_client(client_socket)
                 Thread(
                     target=self._client_loop,
@@ -203,7 +220,7 @@ class Server:
                     daemon=True,
                 ).start()
             except Exception as e:
-                print(f"Server error: {e}")
+                log.warning("server accept: %s", e)
 
 # -- Camera Client Class --
 class CameraClient:
@@ -215,14 +232,10 @@ class CameraClient:
         self.initialize_camera(config)
 
     def initialize_camera(self, config):
-        """Initialize Picamera2 and set up camera parameters"""
-        from Picamera2 import Picamera2
-
         if not self.camera:
             self.camera = Picamera2()
         self.camera.configure(self.camera.create_still_configuration(main=config))
         self.camera.start()
-        print("Camera initialized in CameraClient")
 
     def start_capture_loop(self):
         if not self.camera:
@@ -247,11 +260,10 @@ class CameraClient:
                 stream = io.BytesIO()
                 self.camera.capture_file(stream, format='jpeg')
                 self.shared_class.data['picture'] = stream.getvalue()
-                print("Capture complete! Sending to client...")
                 self.send_captured_jpeg_to_client()
                 self.shared_class.mode = 'default'
             except Exception as e:
-                print(f"Camera Error: {e}")
+                log.warning("camera: %s", e)
                 self.shared_class.mode = 'default'
             finally:
                 self.shared_class.shutter_event.clear()
@@ -261,20 +273,12 @@ class CameraClient:
         srv = self.shared_class.server
         app = self.shared_class.current_app
         if srv is None:
-            print("Picture captured (no TCP client connected)")
             return
         pic = self.shared_class.data.get("picture")
         if not pic:
-            if srv.send_json(
-                {"app": app, "event": "picture_ready", "format": "jpeg"}
-            ):
-                print("picture_ready sent (no image bytes in memory)")
-            else:
-                print("Picture captured (no TCP client connected)")
+            srv.send_json({"app": app, "event": "picture_ready", "format": "jpeg"})
             return
         pic_send = compress_jpeg_for_transfer(pic)
-        if len(pic_send) != len(pic):
-            print(f"JPEG transfer profile: {len(pic)} -> {len(pic_send)} bytes")
         b64 = base64.standard_b64encode(pic_send).decode("ascii")
         payload = {
             "app": app,
@@ -285,36 +289,27 @@ class CameraClient:
             "source_bytes": len(pic),
         }
         try:
-            if srv.send_json(payload):
-                print(f"JPEG sent to client ({len(pic_send)} bytes wire payload)")
-            else:
-                print("Picture captured (no TCP client connected)")
-        except ValueError as e:
-            print(f"JPEG too large for one JSON frame ({e}); sending picture_ready only")
-            srv.send_json(
-                {"app": app, "event": "picture_ready", "format": "jpeg"}
-            )
+            if not srv.send_json(payload):
+                log.warning("picture: send_json failed (no tcp client?)")
+        except ValueError:
+            srv.send_json({"app": app, "event": "picture_ready", "format": "jpeg"})
 
     def video_loop(self):
         while self.running:
             self.shared_class.video_event.wait()
             if not self.running:
                 break
-            print("Video recording started...")
             while self.shared_class.video_event.is_set() and self.running:
                 pass
-            print("Video recording stopped...")
             self.send_video_to_client()
 
     def send_video_to_client(self):
-        print("Video sent to client!")
+        pass
 
 # -- Goggle Button Class --
 class GoggleButton:
     def __init__(self, shared_class, pin, button_callback):
-        from gpiozero import Button
-
-        self.btn = Button(pin)
+        self.btn = GPIOButton(pin)
         self.shared_class = shared_class
         self.button_callback = button_callback
 
@@ -336,18 +331,12 @@ class Display:
         self.display_lock = Lock()
     
     def update_display(self, data):
-        """Update the display with new data"""
         with self.display_lock:
             self.display_data.update(data)
-            # Placeholder: Implement actual display update logic here
-            print(f"Display updated: {self.display_data}")
-    
+
     def reset_display(self):
-        """Reset the display to a blank state"""
         with self.display_lock:
             self.display_data = {}
-            # Placeholder: Implement actual display reset logic here
-            print("Display reset")
     
     def get_display_data(self):
         """Get current display data"""
