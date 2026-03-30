@@ -2,41 +2,55 @@
 App Manager - switching between applications
 """
 from app_registry import APP_ORDER
-from apps.gps_app import *
-from apps.translation_app import *
+from apps.gps_app import GPSApp
+from apps.translation_app import TranslationApp
 
-APPS = {
-    "translation": {
-        "button_callback": translation_button_callback,
-        "message_handler": translation_message_handler,
-        "display_update": translation_display_update,
-    },
-    "gps": {
-        "button_callback": gps_button_callback,
-        "message_handler": gps_message_handler,
-        "display_update": gps_display_update,
-    },
-}
+_APPS = {}
+_current_app_instance = None
 
-if tuple(APPS.keys()) != APP_ORDER:
-    raise RuntimeError("app_manager.APPS keys must match app_registry.APP_ORDER")
+def initialize_apps(shared_class):
+    global _APPS
+    _APPS["translation"] = TranslationApp(shared_class)
+    _APPS["gps"] = GPSApp(shared_class)
+    
+    if tuple(_APPS.keys()) != APP_ORDER:
+        raise RuntimeError("app_manager._APPS keys must match app_registry.APP_ORDER")
 
+def get_current_app():
+    return _current_app_instance
 
-def start_app(app_name, shared, button, server):
-    if app_name not in APPS:
+def start_app(app_name, shared_class, button=None, server=None):
+    global _current_app_instance
+    
+    if not _APPS:
+        initialize_apps(shared_class)
+
+    if app_name not in _APPS:
         return
 
-    app_config = APPS[app_name]
-    shared.switch_app(app_name)
+    if _current_app_instance:
+        _current_app_instance.on_unmount()
 
-    if app_config["button_callback"]:
-        button.update_callback(app_config["button_callback"])
+    shared_class.current_app = app_name
+    _current_app_instance = _APPS[app_name]
+    
+    # We clear the display when switching apps
+    if shared_class.display:
+        shared_class.display.reset_display()
 
-    server.message_handler = app_config["message_handler"]
+    # Update hardware callbacks if they exist
+    btn = button or shared_class.button
+    srv = server or shared_class.server
+    
+    if btn:
+        btn.update_callback(_current_app_instance.on_click)
+    if srv:
+        srv.message_handler = _current_app_instance.on_message
 
-    if app_name == "translation":
-        if shared.camera_client and shared.camera_client.camera and not shared.camera_client.running:
-            shared.camera_client.start_capture_loop()
-    else:
-        if shared.camera_client and shared.camera_client.running:
-            shared.camera_client.stop_capture_loop()
+    _current_app_instance.on_mount()
+
+def switch_to_next_app(shared_class):
+    app_names = list(APP_ORDER)
+    current_idx = app_names.index(shared_class.current_app) if shared_class.current_app in app_names else 0
+    next_app = app_names[(current_idx + 1) % len(app_names)]
+    start_app(next_app, shared_class)

@@ -17,7 +17,6 @@ import signal
 
 from goggles_lib import CameraClient, Display, GoggleButton, Server, SharedClass
 from pairing.pi_ble_peripheral import run_ble_pairing_background, validate_pairing_environment
-from apps.translation_app import translation_button_callback
 from app_manager import start_app
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -49,7 +48,7 @@ def main() -> None:
     shared.server = Server(shared, host=bind_host, port=12345, defer_listen=True)
 
     shared.button = GoggleButton(
-        shared_class=shared, pin=27, button_callback=translation_button_callback
+        shared_class=shared, pin=27, button_callback=None
     )
     start_app("translation", shared, shared.button, shared.server)
     shared.server.start_listen()

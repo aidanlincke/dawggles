@@ -1,68 +1,40 @@
 """
-GPS App - Functions and utilities for GPS-based applications
+GPS App - Stores its own GPS data and display updates
 """
-from threading import Timer
+from apps.base_app import BaseApp
 
-from app_registry import APP_ORDER
+class GPSApp(BaseApp):
+    def __init__(self, shared_class):
+        super().__init__(shared_class)
+        self.name = "gps"
+        self.gps_data = None
 
+    def on_mount(self):
+        # Stop camera since GPS doesn't need it
+        if self.shared_class.camera_client and self.shared_class.camera_client.running:
+            self.shared_class.camera_client.stop_capture_loop()
+        self.update_display()
 
-def gps_display_update(shared_class):
-    """
-    Update display for GPS app with current data
-    """
-    gps_data = shared_class.data.get('gps_data')
-    
-    # Update display with GPS info
-    display_content = {
-        'app': 'gps',
-        'gps_data': gps_data,
-    }
-    shared_class.display.update_display(display_content)
+    def on_unmount(self):
+        pass
 
+    def update_display(self):
+        self.shared_class.display.update_display({
+            "app": "gps",
+            "gps_data": self.gps_data,
+        })
 
-def gps_button_callback(shared_class):
-    """
-    Button callback for GPS app - handles GPS actions, capturing, and app switching
-    """
-    click_count = shared_class.data.get('click_count', 0)
-    timer = shared_class.data.get('timer', None)
-    
-    click_count += 1
-    shared_class.data['click_count'] = click_count
+    def on_click(self, click_count):
+        if click_count >= 3:
+            from app_manager import switch_to_next_app
+            switch_to_next_app(self.shared_class)
+
+    def on_message(self, message):
+        if "app" in message and message["app"] != self.name:
+            from app_manager import start_app
+            start_app(message["app"], self.shared_class)
+            return
         
-    if timer is None:
-        timer = Timer(0.4, lambda: _process_gps_clicks(shared_class))
-        timer.start()
-        shared_class.data['timer'] = timer
-
-
-def _process_gps_clicks(shared_class):
-    """
-    Process GPS button clicks for GPS actions or switching apps
-    """
-    from app_manager import start_app
-
-    if shared_class.data.get('click_count', 0) >= 3:
-        app_names = list(APP_ORDER)
-        current_idx = app_names.index(shared_class.current_app) if shared_class.current_app in app_names else 0
-        next_app = app_names[(current_idx + 1) % len(app_names)]
-        start_app(next_app, shared_class, shared_class.button, shared_class.server)
-
-    shared_class.data['click_count'] = 0
-    shared_class.data['timer'] = None
-
-def gps_message_handler(shared_class, message):
-    """
-    Message handler for GPS app messages
-    """
-    # Check for app switching from phone
-    if 'app' in message and message['app'] != shared_class.current_app:
-        from app_manager import start_app
-
-        start_app(message['app'], shared_class, shared_class.button, shared_class.server)
-        return  # Don't process other message data when switching apps
-    
-    # Store GPS data if provided
-    if 'data' in message:
-        shared_class.data["gps_data"] = message.get("data")
-        shared_class.display.update_display({"gps_data": shared_class.data["gps_data"]})
+        if "data" in message:
+            self.gps_data = message.get("data")
+            self.update_display()

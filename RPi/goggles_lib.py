@@ -4,65 +4,22 @@ import json
 import logging
 import socket
 import struct
+import queue
 from threading import Event, Lock, Thread, Timer
 
 from gpiozero import Button as GPIOButton
 from picamera2 import Picamera2
-from PIL import Image
 
 log = logging.getLogger(__name__)
 
 # Max JSON payload per framed message (bytes after length prefix).
 MAX_JSON_MESSAGE_BYTES = 32 * 1024 * 1024
 
-# JPEG pipeline before base64/TCP (Pi Zero 2 W: smaller files = less CPU + less Wi‑Fi time).
-TRANSFER_JPEG_MAX_EDGE_PX = 1280
-TRANSFER_JPEG_QUALITY_START = 82
-TRANSFER_JPEG_QUALITY_MIN = 52
-TRANSFER_JPEG_QUALITY_STEP = 6
-TRANSFER_JPEG_TARGET_BYTES = 400_000
-
-
-def compress_jpeg_for_transfer(jpeg_bytes: bytes) -> bytes:
-    """Downscale/re-encode with Pillow; on error return original bytes."""
-    try:
-        im = Image.open(io.BytesIO(jpeg_bytes))
-        im = im.convert("RGB")
-    except Exception:
-        return jpeg_bytes
-
-    max_edge = TRANSFER_JPEG_MAX_EDGE_PX
-    w, h = im.size
-    if max(w, h) > max_edge:
-        try:
-            resample = Image.Resampling.BILINEAR
-        except AttributeError:
-            resample = Image.BILINEAR
-        im.thumbnail((max_edge, max_edge), resample)
-
-    buf = io.BytesIO()
-    q = TRANSFER_JPEG_QUALITY_START
-    best = jpeg_bytes
-    while q >= TRANSFER_JPEG_QUALITY_MIN:
-        buf.seek(0)
-        buf.truncate()
-        im.save(buf, format="JPEG", quality=q, optimize=True)
-        candidate = buf.getvalue()
-        if len(candidate) <= TRANSFER_JPEG_TARGET_BYTES or q == TRANSFER_JPEG_QUALITY_MIN:
-            best = candidate
-            break
-        q -= TRANSFER_JPEG_QUALITY_STEP
-        best = candidate
-
-    return best
-
-
 # -- Goggle Shared Class --
 class SharedClass:
   def __init__(self):
     self.current_app = 'translation'  # Which app is currently active
-    self.mode = 'default'  # App-specific state (e.g., 'default', 'capturing', 'processing')
-    self.data = {}  # Generic data storage for app-specific data
+    self.data = {}  # Generic data storage
     self.server = None   # Set by app_manager during initialize_system
     self.display = None  # Set by app_manager during initialize_system
     self.button = None   # Set by app_manager during initialize_system
@@ -75,18 +32,6 @@ class SharedClass:
     # Set by pairing after BLE password OK; main() waits before binding TCP.
     self.paired_tcp_host = None  # str | None — Pi LAN IP to bind (never 0.0.0.0 in production)
     self.tcp_bind_ready = Event()
-
-  def switch_app(self, app_name):
-    """Switch to a different app"""
-    self.current_app = app_name
-    self.mode = 'default'  # Reset to default mode for new app
-    self.data = {}  # Reset data for new app
-    self.display.reset_display()
-  
-  def reset_app_data(self, app_name):
-    """Reset data for a specific app (if needed)"""
-    if self.current_app == app_name:
-      self.data = {}
 
 # -- Server Class --
 class Server:
@@ -108,7 +53,7 @@ class Server:
         self.shared_class = shared_class
         self.host = host
         self.port = port
-        self.message_handler = message_handler  # (shared_class, dict) -> None
+        self.message_handler = message_handler  # (dict) -> None
         self._client_socket = None
         self._client_lock = Lock()
         self._send_lock = Lock()
@@ -116,6 +61,12 @@ class Server:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(1)
+        
+        # Message queue for non-blocking TCP receive
+        self.message_queue = queue.Queue()
+        self.worker_thread = Thread(target=self._worker_loop, daemon=True)
+        self.worker_thread.start()
+
         self.thread = None
         if not defer_listen:
             self.start_listen()
@@ -172,6 +123,19 @@ class Server:
                 log.warning("send_json: %s", e)
                 return False
 
+    def _worker_loop(self):
+        while True:
+            try:
+                message = self.message_queue.get()
+                if self.message_handler:
+                    try:
+                        self.message_handler(message)
+                    except Exception as e:
+                        log.warning("message_handler error: %s", e)
+                self.message_queue.task_done()
+            except Exception as e:
+                log.warning("worker_loop error: %s", e)
+
     def _client_loop(self, client_socket, addr):
         sc = self.shared_class
         token = getattr(sc, "tcp_auth_token", None)
@@ -197,8 +161,9 @@ class Server:
                     message.pop("auth_token", None)
                     if not message:
                         continue
-                if self.message_handler:
-                    self.message_handler(self.shared_class, message)
+                
+                # Push to worker thread so network loop isn't blocked
+                self.message_queue.put(message)
         except (ConnectionError, OSError):
             pass
         finally:
@@ -248,6 +213,7 @@ class CameraClient:
 
     def stop_capture_loop(self):
         self.running = False
+        self.shared_class.shutter_event.set() # Wake up the thread so it can exit cleanly
         if self.capture_thread:
             self.capture_thread.join(timeout=1)
 
@@ -258,13 +224,23 @@ class CameraClient:
                 break
             try:
                 stream = io.BytesIO()
+                # Rely on hardware to encode JPEG at optimal size
                 self.camera.capture_file(stream, format='jpeg')
                 self.shared_class.data['picture'] = stream.getvalue()
                 self.send_captured_jpeg_to_client()
-                self.shared_class.mode = 'default'
+                
+                # Notify the app that capture completed
+                import app_manager
+                app_inst = app_manager.get_current_app()
+                if app_inst and hasattr(app_inst, 'on_capture_complete'):
+                    app_inst.on_capture_complete()
+
             except Exception as e:
                 log.warning("camera: %s", e)
-                self.shared_class.mode = 'default'
+                import app_manager
+                app_inst = app_manager.get_current_app()
+                if app_inst and hasattr(app_inst, 'on_capture_complete'):
+                    app_inst.on_capture_complete()
             finally:
                 self.shared_class.shutter_event.clear()
 
@@ -278,14 +254,15 @@ class CameraClient:
         if not pic:
             srv.send_json({"app": app, "event": "picture_ready", "format": "jpeg"})
             return
-        pic_send = compress_jpeg_for_transfer(pic)
-        b64 = base64.standard_b64encode(pic_send).decode("ascii")
+        
+        # Bypass Pillow and send the JPEG raw bytes
+        b64 = base64.standard_b64encode(pic).decode("ascii")
         payload = {
             "app": app,
             "event": "picture",
             "format": "jpeg",
             "image_b64": b64,
-            "byte_length": len(pic_send),
+            "byte_length": len(pic),
             "source_bytes": len(pic),
         }
         try:
@@ -309,16 +286,32 @@ class CameraClient:
 # -- Goggle Button Class --
 class GoggleButton:
     def __init__(self, shared_class, pin, button_callback):
-        self.btn = GPIOButton(pin)
+        # bounce_time=0.05 gives 50ms hardware debounce
+        self.btn = GPIOButton(pin, bounce_time=0.05)
         self.shared_class = shared_class
         self.button_callback = button_callback
+        
+        self.click_count = 0
+        self.click_timer = None
+        self.timer_lock = Lock()
 
-        # Set up the button with a wrapper to inject shared_class
-        self.btn.when_pressed = self._wrapped_callback
+        self.btn.when_pressed = self._on_press
 
-    def _wrapped_callback(self):
-        """Wrapper to inject shared_class into the app-specific callback"""
-        self.button_callback(self.shared_class)
+    def _on_press(self):
+        with self.timer_lock:
+            self.click_count += 1
+            if self.click_timer is None:
+                self.click_timer = Timer(0.4, self._process_clicks)
+                self.click_timer.start()
+
+    def _process_clicks(self):
+        with self.timer_lock:
+            count = self.click_count
+            self.click_count = 0
+            self.click_timer = None
+            
+        if self.button_callback:
+            self.button_callback(count)
 
     def update_callback(self, button_callback):
         """Update the button callback (useful when switching apps)"""
