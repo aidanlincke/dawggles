@@ -15,6 +15,15 @@ def send_framed_json(sock, payload):
     sock.sendall(frame)
     print(f"Sent: {json.dumps(payload)}")
 
+def recv_exact(sock, n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("Socket closed")
+        buf += chunk
+    return bytes(buf)
+
 def receive_loop(sock, stop_event):
     """Background thread to receive and print incoming messages from the Pi."""
     while not stop_event.is_set():
@@ -22,18 +31,10 @@ def receive_loop(sock, stop_event):
         if not readable:
             continue
         try:
-            hdr = sock.recv(4)
-            if len(hdr) < 4:
-                break
+            hdr = recv_exact(sock, 4)
             (length,) = struct.unpack("!I", hdr)
             
-            raw = bytearray()
-            while len(raw) < length:
-                chunk = sock.recv(length - len(raw))
-                if not chunk:
-                    break
-                raw += chunk
-                
+            raw = recv_exact(sock, length)
             msg = json.loads(raw.decode("utf-8"))
             
             # Don't flood the terminal with base64 image data
@@ -51,7 +52,9 @@ def receive_loop(sock, stop_event):
             else:
                 print(f"\n[Received] {json.dumps(msg)}")
                 
-        except Exception:
+        except Exception as e:
+            if not stop_event.is_set():
+                print(f"\n[Receiver Thread Error] {e}")
             break
 
 def main():
