@@ -16,7 +16,7 @@ import signal
 import time
 
 from goggles_lib import CameraClient, Display, GoggleButton, Server, SharedClass
-from app_manager import start_app
+from app_manager import start_app, switch_to_next_app
 from pairing.pi_ble_peripheral import run_ble_pairing_background
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -52,8 +52,19 @@ def main() -> None:
     # Wait for the phone to connect before starting the apps
     logging.info("Waiting for phone to connect to TCP socket...")
     
+    # App callback button: GPIO 4 (pin 7)
     shared.button = GoggleButton(
-        shared_class=shared, pin=27, button_callback=None
+        shared_class=shared, pin=4, button_callback=None
+    )
+
+    # Cycle apps button: GPIO 23 (pin 16)
+    def cycle_callback(click_count):
+        if click_count > 0:
+            logging.info(f"Cycle button clicked {click_count} times, switching app...")
+            switch_to_next_app(shared)
+
+    shared.cycle_button = GoggleButton(
+        shared_class=shared, pin=23, button_callback=cycle_callback
     )
 
     while shared.server._client_socket is None:

@@ -39,7 +39,8 @@ class SharedClass:
     self.data = {}  # Generic data storage
     self.server = None   # Set by app_manager during initialize_system
     self.display = None  # Set by app_manager during initialize_system
-    self.button = None   # Set by app_manager during initialize_system
+    self.button = None   # App action button, set by app_manager during initialize_system
+    self.cycle_button = None # App cycling button
     self.camera_client = None  # Set by app_manager during initialize_system
     self.shutter_event = Event()
     self.video_event = Event()
