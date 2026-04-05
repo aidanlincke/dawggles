@@ -384,6 +384,21 @@ class Display:
         except Exception as e:
             log.warning(f"OLED render failed: {e}")
 
+    def show_temporary_message(self, lines, duration=2.0):
+        """Shows a message for a short duration, then reverts to normal display state."""
+        with self.display_lock:
+            if self.temp_message_timer:
+                self.temp_message_timer.cancel()
+            self._render_text(lines)
+            
+            def _clear():
+                with self.display_lock:
+                    self.temp_message_timer = None
+                    self._render_current_state()
+                    
+            self.temp_message_timer = Timer(duration, _clear)
+            self.temp_message_timer.start()
+
     def _render_current_state(self):
         """Renders the actual display state based on display_data."""
         if self.display_data.get("status") == "pairing_idle":
