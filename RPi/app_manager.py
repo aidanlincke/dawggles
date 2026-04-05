@@ -40,6 +40,7 @@ def start_app(app_name, shared_class, button=None, server=None):
     # We clear the display when switching apps
     if shared_class.display:
         shared_class.display.reset_display()
+        shared_class.display.show_temporary_message(app_name.upper(), 2.0)
 
     # Update hardware callbacks if they exist
     btn = button or shared_class.button
