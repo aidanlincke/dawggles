@@ -4,6 +4,9 @@ import json
 import sys
 import threading
 import select
+import base64
+import os
+import time
 
 def send_framed_json(sock, payload):
     """Sends a JSON dictionary with a 4-byte big-endian length prefix."""
@@ -35,7 +38,16 @@ def receive_loop(sock, stop_event):
             
             # Don't flood the terminal with base64 image data
             if msg.get("event") == "picture":
-                print(f"\n[Received] Picture ready! ({msg.get('byte_length')} bytes)")
+                b64 = msg.get("image_b64")
+                if b64:
+                    save_dir = "dawggles_incoming"
+                    os.makedirs(save_dir, exist_ok=True)
+                    path = os.path.join(save_dir, f"picture_{int(time.time() * 1000)}.jpg")
+                    with open(path, "wb") as f:
+                        f.write(base64.standard_b64decode(b64))
+                    print(f"\n[Received] Picture saved to {path} ({msg.get('byte_length')} bytes)")
+                else:
+                    print(f"\n[Received] Picture ready signal! (No image data)")
             else:
                 print(f"\n[Received] {json.dumps(msg)}")
                 
