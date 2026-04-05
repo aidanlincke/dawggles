@@ -214,6 +214,7 @@ class CameraClient:
         if self.capture_thread and self.capture_thread.is_alive():
             return
         self.running = True
+        self.shared_class.shutter_event.clear()
         self.capture_thread = Thread(target=self.capture_loop, daemon=True)
         self.capture_thread.start()
 

@@ -1,6 +1,7 @@
 """
 App Manager - switching between applications
 """
+import logging
 from app_registry import APP_ORDER
 from apps.gps_app import GPSApp
 from apps.translation_app import TranslationApp
@@ -33,6 +34,8 @@ def start_app(app_name, shared_class, button=None, server=None):
 
     shared_class.current_app = app_name
     _current_app_instance = _APPS[app_name]
+    
+    logging.info(f"--- Switched to APP: {app_name.upper()} ---")
     
     # We clear the display when switching apps
     if shared_class.display:
