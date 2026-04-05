@@ -22,3 +22,7 @@ class BaseApp:
     def on_capture_complete(self):
         """Called when the camera finishes capturing a picture."""
         pass
+
+    def render_display(self, display):
+        """Called when the display needs to re-render for this app."""
+        pass

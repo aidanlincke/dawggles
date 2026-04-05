@@ -384,21 +384,6 @@ class Display:
         except Exception as e:
             log.warning(f"OLED render failed: {e}")
 
-    def show_temporary_message(self, lines, duration=2.0):
-        """Shows a message for a short duration, then reverts to normal display state."""
-        with self.display_lock:
-            if self.temp_message_timer:
-                self.temp_message_timer.cancel()
-            self._render_text(lines)
-            
-            def _clear():
-                with self.display_lock:
-                    self.temp_message_timer = None
-                    self._render_current_state()
-                    
-            self.temp_message_timer = Timer(duration, _clear)
-            self.temp_message_timer.start()
-
     def _render_current_state(self):
         """Renders the actual display state based on display_data."""
         if self.display_data.get("status") == "pairing_idle":
@@ -407,14 +392,10 @@ class Display:
             pin = self.display_data.get("pin", "")
             self._render_text(["ENTER PIN:", "", f"{pin}"])
         elif self.display_data.get("app"):
-            app_name = self.display_data.get("app")
-            
-            if app_name == "translation" and self.display_data.get("translation_data"):
-                # Basic placeholder for viewing translation data
-                data = str(self.display_data.get("translation_data"))
-                self._render_text([data[:15], data[15:30]])
-            elif app_name == "gps" and self.display_data.get("gps_data"):
-                self._render_text("GPS DATA")
+            import app_manager
+            app_inst = app_manager.get_current_app()
+            if app_inst and hasattr(app_inst, 'render_display'):
+                app_inst.render_display(self)
             else:
                 # Default app state is a blank screen so you can see through the goggles
                 if self.hardware_available:

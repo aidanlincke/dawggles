@@ -23,11 +23,21 @@ class TranslationApp(BaseApp):
         pass
 
     def update_display(self):
+        # Trigger the display to re-render using our state
         self.shared_class.display.update_display({
-            "app": "translation",
-            "translation_data": self.translation_data,
-            "display_idx": self.display_idx,
+            "app": "translation"
         })
+
+    def render_display(self, display):
+        if not self.translation_data:
+            if display.hardware_available:
+                display.oled.fill(0)
+                display.oled.show()
+            return
+            
+        # Basic placeholder for viewing translation data
+        data = str(self.translation_data)
+        display._render_text([data[:15], data[15:30]])
 
     def on_click(self, click_count):
         if click_count >= 3:
@@ -55,13 +65,6 @@ class TranslationApp(BaseApp):
     def on_message(self, message):
         if message.get("_dawggles_ping") is True and self.shared_class.server:
             self.shared_class.server.send_json({"_dawggles_pong": True})
-            return
-
-        # Remote shutter (Mac / iOS)
-        if message.get("dawggles_shutter") is True:
-            if self.mode == "default":
-                self.mode = "capturing"
-                self.shared_class.shutter_event.set()
             return
 
         if "app" in message and message["app"] != self.name:

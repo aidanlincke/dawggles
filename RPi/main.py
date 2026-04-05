@@ -12,7 +12,6 @@ Leave AP for CMU-DEVICE: sudo ./network/restore_cmu_wifi.sh
 """
 import logging
 import os
-import signal
 import time
 
 from goggles_lib import CameraClient, Display, GoggleButton, Server, SharedClass
@@ -77,29 +76,6 @@ def main() -> None:
     
     # 4. Start the app (this assigns the correct button callbacks for the app)
     start_app("translation", shared, shared.button, shared.server)
-
-    _env_snap = os.environ.get("DAWGGLES_SIGUSR1_SNAP", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-
-    def _sigusr1_snap(_signum, _frame):
-        cc = shared.camera_client
-        if not cc or not cc.running:
-            logging.warning("SIGUSR1: camera capture loop not running")
-            return
-        shared.shutter_event.set()
-        logging.info("SIGUSR1: capture + send to TCP client")
-
-    if _env_snap:
-        signal.signal(signal.SIGUSR1, _sigusr1_snap)
-        logging.info(
-            "DAWGGLES_SIGUSR1_SNAP: run  kill -USR1 %s  or  python3 trigger_snap_send.py",
-            os.getpid(),
-        )
-    else:
-        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
 
     try:
         while True:

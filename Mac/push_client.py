@@ -9,9 +9,6 @@ Duplex TCP client for the Pi (same framing as RPi/goggles_lib.Server).
 
 Wire: 4-byte big-endian length + UTF-8 JSON object. Stdin: one JSON object per line; empty line exits.
 Background thread receives Pi→Mac frames (JPEGs saved under --save-dir).
-
-Trigger a capture on the Pi (translation app, idle):
-  {"dawggles_shutter":true}
 """
 from __future__ import annotations
 
