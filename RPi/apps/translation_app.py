@@ -32,6 +32,8 @@ class TranslationApp(BaseApp):
         if not self.translation_data:
             if display.hardware_available:
                 display.oled.fill(0)
+                # Show a default prompt when no translation is actively being viewed
+                display._render_text(["TRANSLATION", "", "Press button", "to scan"])
                 display.oled.show()
             return
             
@@ -47,8 +49,11 @@ class TranslationApp(BaseApp):
 
         with self.shared_class.display_lock:
             if click_count == 1:
+                import logging
+                logging.info("TranslationApp: Shutter button pressed!")
                 if self.mode == "default":
                     self.mode = "capturing"
+                    self.shared_class.display.show_temporary_message("CAPTURING...", 1.5)
                     self.shared_class.shutter_event.set()
                 else:
                     self.display_idx += 1
@@ -61,6 +66,7 @@ class TranslationApp(BaseApp):
     def on_capture_complete(self):
         # We sent the picture, user can take another one if they want while waiting
         self.mode = "default"
+        self.shared_class.display.show_temporary_message("SENT TO APP", 1.5)
 
     def on_message(self, message):
         if message.get("_dawggles_ping") is True and self.shared_class.server:
@@ -70,6 +76,9 @@ class TranslationApp(BaseApp):
         if "app" in message and message["app"] != self.name:
             from app_manager import start_app
             start_app(message["app"], self.shared_class)
+            # Re-inject the message so the newly active app can process its payload
+            if "data" in message and self.shared_class.server:
+                self.shared_class.server.message_queue.put(message)
             return
 
         if "data" in message:
