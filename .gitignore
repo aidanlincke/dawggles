@@ -16,19 +16,3 @@ __pycache__/
 
 # Syncthing
 .stfolder
-
-# Binary scratch (Pi camera, screen captures, temp exports)
-# Note: adding real assets (e.g. iOS AppIcon PNGs) may require: git add -f <path>
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.bmp
-*.tif
-*.tiff
-*.ico
-*.webp
-*.svg
-*.mp4
-*.mov
-*.avi
