@@ -22,7 +22,7 @@ final class DawgglesAccessorySetup: ObservableObject {
     @Published var status: String = ""
     @Published private(set) var isSessionReady = false
 
-    private let session = ASAccessorySession()
+    private var session: ASAccessorySession?
     /// Same queue as Apple’s AccessorySetupKit samples; keeps callbacks off the SwiftUI main actor lock.
     private let sessionQueue = DispatchQueue.main
 
@@ -34,6 +34,7 @@ final class DawgglesAccessorySetup: ObservableObject {
     /// Starts the accessory session if needed. Events update `status` and `isSessionReady`.
     func ensureSessionActivated() {
         guard !didStartActivation else { return }
+        guard let session = getOrCreateSession() else { return }
         didStartActivation = true
 
         session.activate(on: sessionQueue) { [weak self] event in
@@ -55,6 +56,7 @@ final class DawgglesAccessorySetup: ObservableObject {
     /// Removes the iOS BLE bond for the accessory managed through this app (still run `unpair.py` on the Pi).
     func unpairFromPhone() {
         ensureSessionActivated()
+        guard let session = session else { return }
         guard isSessionReady else {
             status = "Setting up Bluetooth… try Unpair again in a moment."
             return
@@ -127,6 +129,10 @@ final class DawgglesAccessorySetup: ObservableObject {
     }
 
     private func presentPicker() {
+        guard let session = session else {
+            status = "Accessory session unavailable."
+            return
+        }
         var descriptor = ASDiscoveryDescriptor()
         descriptor.bluetoothServiceUUID = Self.dawgglesServiceUUID
         descriptor.bluetoothNameSubstring = "Dawggles"
@@ -147,5 +153,36 @@ final class DawgglesAccessorySetup: ObservableObject {
                 }
             }
         }
+    }
+
+    private func getOrCreateSession() -> ASAccessorySession? {
+#if targetEnvironment(simulator)
+        status = "AccessorySetupKit pairing is only supported on physical iPhone/iPad."
+        return nil
+#else
+        guard hasValidAccessorySetupConfiguration() else {
+            status = "Accessory setup config is invalid. Check the app Info.plist values."
+            return nil
+        }
+        if let session {
+            return session
+        }
+        let created = ASAccessorySession()
+        session = created
+        return created
+#endif
+    }
+
+    private func hasValidAccessorySetupConfiguration() -> Bool {
+        let info = Bundle.main.infoDictionary ?? [:]
+
+        let supports = (info["NSAccessorySetupKitSupports"] as? [String]) ?? (info["NSAccessorySetupSupports"] as? [String]) ?? []
+        guard supports.contains("Bluetooth") else { return false }
+
+        let names = (info["NSAccessorySetupBluetoothNames"] as? [String]) ?? []
+        let services = (info["NSAccessorySetupBluetoothServices"] as? [String]) ?? []
+        let companyIDs = (info["NSAccessorySetupBluetoothCompanyIdentifiers"] as? [String]) ?? []
+
+        return !names.isEmpty && !services.isEmpty && !companyIDs.isEmpty
     }
 }

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		DD71085B2F50189C00AC04E4 /* AccessorySetupKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DD71085A2F50189C00AC04E4 /* AccessorySetupKit.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		DD7108492F50189C00AC04E4 /* Dawggles.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Dawggles.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD71085A2F50189C00AC04E4 /* AccessorySetupKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AccessorySetupKit.framework; path = System/Library/Frameworks/AccessorySetupKit.framework; sourceTree = SDKROOT; };
@@ -14,10 +18,23 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DD71084B2F50189C00AC04E4 /* Dawggles */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DD71085C2F50189C00AC04E4 /* Exceptions for "Dawggles" folder in "Dawggles" target */,
+			);
 			path = Dawggles;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		DD71085C2F50189C00AC04E4 /* Exceptions for "Dawggles" folder in "Dawggles" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = DD7108482F50189C00AC04E4 /* Dawggles */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		DD7108462F50189C00AC04E4 /* Frameworks */ = {
@@ -30,16 +47,13 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
-/* Begin PBXBuildFile section */
-		DD71085B2F50189C00AC04E4 /* AccessorySetupKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DD71085A2F50189C00AC04E4 /* AccessorySetupKit.framework */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXGroup section */
 		DD7108402F50189C00AC04E4 = {
 			isa = PBXGroup;
 			children = (
 				DD71084B2F50189C00AC04E4 /* Dawggles */,
 				DD71084A2F50189C00AC04E4 /* Products */,
+				DDB502782F90A132007BD3C9 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -49,6 +63,14 @@
 				DD7108492F50189C00AC04E4 /* Dawggles.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		DDB502782F90A132007BD3C9 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				DD71085A2F50189C00AC04E4 /* AccessorySetupKit.framework */,
+			);
+			name = "Recovered References";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -262,7 +284,7 @@
 				DEVELOPMENT_TEAM = H9HXNF85G9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = AccessorySetupInfo.plist;
+				INFOPLIST_FILE = Dawggles/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -295,7 +317,7 @@
 				DEVELOPMENT_TEAM = H9HXNF85G9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = AccessorySetupInfo.plist;
+				INFOPLIST_FILE = Dawggles/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

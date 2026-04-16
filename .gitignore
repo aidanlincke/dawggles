@@ -4,8 +4,6 @@
 # Xcode / Swift — user-specific UI state & local build output
 **/xcuserdata/
 *.xcuserstate
-**/DerivedData/
-**/.derivedData/
 
 # Python
 .venv/
