@@ -28,11 +28,15 @@ ADAPTER_IFACE       = "org.bluez.Adapter1"
 DEVICE_IFACE        = "org.bluez.Device1"
 AGENT_MANAGER_IFACE = "org.bluez.AgentManager1"
 AGENT_IFACE         = "org.bluez.Agent1"
+LE_ADV_MANAGER_IFACE = "org.bluez.LEAdvertisingManager1"
+LE_ADV_IFACE         = "org.bluez.LEAdvertisement1"
 PROPS_IFACE         = "org.freedesktop.DBus.Properties"
 OBJ_MANAGER_IFACE   = "org.freedesktop.DBus.ObjectManager"
 
 AGENT_PATH  = "/org/dawggles/agent"
+ADV_PATH    = "/org/dawggles/advertisement0"
 DEVICE_NAME = "Dawggles"
+PAIR_SERVICE_UUID = "0000d100-0000-1000-8000-00805f9b34fb"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -60,6 +64,60 @@ def set_adapter(bus, discoverable, pairable):
     if discoverable:
         # 0 = no timeout, stay discoverable until we turn it off manually
         props.Set(ADAPTER_IFACE, "DiscoverableTimeout", dbus.UInt32(0))
+
+
+def adapter_supports_le_advertising(bus):
+    manager = dbus.Interface(bus.get_object(BLUEZ_SERVICE, "/"), OBJ_MANAGER_IFACE)
+    objects = manager.GetManagedObjects()
+    adapter_ifaces = objects.get(ADAPTER_PATH, {})
+    return LE_ADV_MANAGER_IFACE in adapter_ifaces
+
+
+def register_advertisement_or_raise(ad_mgr, timeout_seconds=15):
+    """
+    Register LE advertisement asynchronously while pumping GLib.
+
+    A synchronous RegisterAdvertisement call can deadlock/time out when BlueZ
+    needs to call back into our local advertisement object during registration.
+    """
+    wait_loop = GLib.MainLoop()
+    state = {"ok": False, "error": None}
+
+    def on_reply():
+        state["ok"] = True
+        wait_loop.quit()
+
+    def on_error(err):
+        state["error"] = err
+        wait_loop.quit()
+
+    def on_timeout():
+        state["error"] = TimeoutError(
+            f"RegisterAdvertisement timed out after {timeout_seconds}s"
+        )
+        wait_loop.quit()
+        return False
+
+    timeout_id = GLib.timeout_add_seconds(timeout_seconds, on_timeout)
+    ad_mgr.RegisterAdvertisement(
+        ADV_PATH,
+        {},
+        reply_handler=on_reply,
+        error_handler=on_error,
+    )
+    wait_loop.run()
+
+    try:
+        GLib.source_remove(timeout_id)
+    except Exception:
+        pass
+
+    if state["ok"]:
+        return
+    err = state["error"] or RuntimeError("Unknown LE advertisement failure")
+    if isinstance(err, Exception):
+        raise err
+    raise RuntimeError(str(err))
 
 
 # ── BlueZ Agent1 implementation ────────────────────────────────────────────────
@@ -141,6 +199,39 @@ class DawgglesAgent(dbus.service.Object):
         print("Pairing request cancelled by remote device.")
 
 
+class DawgglesAdvertisement(dbus.service.Object):
+    """
+    LE advertisement that makes AccessorySetupKit discovery deterministic.
+
+    AccessorySetupKit in iOS filters by advertised BLE metadata (service UUID,
+    optional name substring, manufacturer data). Adapter discoverability alone
+    is not enough for those LE-specific filters.
+    """
+
+    def __init__(self, bus, path):
+        super().__init__(bus, path)
+        self._properties = {
+            LE_ADV_IFACE: {
+                "Type": dbus.String("peripheral"),
+                "ServiceUUIDs": dbus.Array([dbus.String(PAIR_SERVICE_UUID)], signature="s"),
+                "LocalName": dbus.String(DEVICE_NAME),
+                "IncludeTxPower": dbus.Boolean(True),
+            }
+        }
+
+    @dbus.service.method(PROPS_IFACE, in_signature="s", out_signature="a{sv}")
+    def GetAll(self, interface):
+        if interface != LE_ADV_IFACE:
+            raise dbus.exceptions.DBusException(
+                "InvalidArguments", name="org.freedesktop.DBus.Error.InvalidArgs"
+            )
+        return self._properties[LE_ADV_IFACE]
+
+    @dbus.service.method(LE_ADV_IFACE)
+    def Release(self):
+        print("LE advertisement released by BlueZ.")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -173,7 +264,24 @@ def main():
     agent_mgr.RequestDefaultAgent(AGENT_PATH)
     print("Agent registered  (capability: DisplayYesNo  →  Numeric Comparison)")
 
-    # ── 4. Listen for the Paired property flipping True ────────────────────────
+    # ── 4. Start LE advertising for AccessorySetupKit discovery ───────────────
+    if not adapter_supports_le_advertising(bus):
+        print("❌ Adapter does not expose LEAdvertisingManager1.")
+        print("   In-app AccessorySetupKit discovery requires BLE LE advertising support.")
+        sys.exit(1)
+    ad_mgr = dbus.Interface(
+        bus.get_object(BLUEZ_SERVICE, ADAPTER_PATH), LE_ADV_MANAGER_IFACE
+    )
+    advertisement = DawgglesAdvertisement(bus, ADV_PATH)
+    try:
+        register_advertisement_or_raise(ad_mgr, timeout_seconds=15)
+    except Exception as e:
+        print(f"❌ Could not start LE advertisement required for in-app pairing: {e}")
+        print("   Ensure bluetoothd supports LEAdvertisingManager1 and no other advertiser is active.")
+        sys.exit(1)
+    print(f"LE advertisement started  (name: {DEVICE_NAME}, service: {PAIR_SERVICE_UUID})")
+
+    # ── 5. Listen for the Paired property flipping True ────────────────────────
     def on_props_changed(iface, changed, invalidated, path=None):
         if iface != DEVICE_IFACE:
             return
@@ -199,9 +307,10 @@ def main():
         path_keyword="path",
     )
 
-    # ── 5. Go discoverable and block until pairing completes or user cancels ───
+    # ── 6. Go discoverable and block until pairing completes or user cancels ───
     set_adapter(bus, discoverable=True, pairable=True)
-    print(f'\nDawggles is discoverable. Open iPhone Settings > Bluetooth and tap "{DEVICE_NAME}".')
+    print(f'\nDawggles is discoverable. Open the Dawggles iOS app and tap "Pair Dawggles".')
+    print(f'Fallback path still works: iPhone Settings > Bluetooth > "{DEVICE_NAME}".')
     print("Ctrl+C to cancel.\n")
 
     try:
@@ -211,6 +320,7 @@ def main():
     finally:
         try:
             set_adapter(bus, discoverable=False, pairable=False)
+            ad_mgr.UnregisterAdvertisement(ADV_PATH)
             agent_mgr.UnregisterAgent(AGENT_PATH)
         except Exception:
             pass

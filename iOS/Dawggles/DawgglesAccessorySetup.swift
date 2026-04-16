@@ -136,7 +136,7 @@ final class DawgglesAccessorySetup: ObservableObject {
         var descriptor = ASDiscoveryDescriptor()
         descriptor.bluetoothServiceUUID = Self.dawgglesServiceUUID
         descriptor.bluetoothNameSubstring = "Dawggles"
-        descriptor.bluetoothRange = .immediate
+        descriptor.supportedOptions = [.bluetoothPairingLE]
 
         let symbol = UIImage(systemName: "eyeglasses") ?? UIImage()
         let item = ASPickerDisplayItem(
