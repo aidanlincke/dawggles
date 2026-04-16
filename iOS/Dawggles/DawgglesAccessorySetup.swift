@@ -19,8 +19,13 @@ final class DawgglesAccessorySetup: ObservableObject {
     /// Same custom service as `DawgglesConnection` / Pi firmware.
     static let dawgglesServiceUUID = CBUUID(string: "0000D100-0000-1000-8000-00805F9B34FB")
 
+    // Hardcoded hotspot credentials — swap for dynamic values once the accessory advertises them.
+    private static let hotspotSSID = "Dawggles"
+    private static let hotspotPassword = "tamalgames"
+
     @Published var status: String = ""
     @Published private(set) var isSessionReady = false
+    @Published private(set) var pairedAccessory: ASAccessory?
 
     private var session: ASAccessorySession?
     /// Same queue as Apple’s AccessorySetupKit samples; keeps callbacks off the SwiftUI main actor lock.
@@ -81,6 +86,28 @@ final class DawgglesAccessorySetup: ObservableObject {
         }
     }
 
+    // MARK: - Hotspot
+
+    /// Joins the accessory's Wi-Fi hotspot via AccessorySetupKit.
+    /// Credentials are hardcoded — replace once the accessory advertises them dynamically.
+    func joinHotspot(accessory: ASAccessory) {
+        guard let session else {
+            status = "Session unavailable — cannot join hotspot."
+            return
+        }
+        let options = ASAccessoryHotspotDescriptor(ssid: Self.hotspotSSID, passphrase: Self.hotspotPassword)
+        session.joinAccessoryHotspot(accessory, options: options) { [weak self] error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.status = "Hotspot join failed: \(error.localizedDescription)"
+                } else {
+                    self.status = "✅ Joined \(Self.hotspotSSID) Wi-Fi"
+                }
+            }
+        }
+    }
+
     // MARK: - Private
 
     private func handle(event: ASAccessoryEvent) {
@@ -92,8 +119,11 @@ final class DawgglesAccessorySetup: ObservableObject {
                 presentPicker()
             }
         case .accessoryAdded:
-            let name = event.accessory?.displayName ?? "Dawggles"
-            status = "Added \(name). You can use Wi‑Fi setup when ready."
+            guard let accessory = event.accessory else { break }
+            pairedAccessory = accessory
+            let name = accessory.displayName
+            status = "Added \(name). Joining hotspot…"
+            joinHotspot(accessory: accessory)
         case .accessoryChanged:
             break
         case .accessoryRemoved:
@@ -137,6 +167,7 @@ final class DawgglesAccessorySetup: ObservableObject {
         descriptor.bluetoothServiceUUID = Self.dawgglesServiceUUID
         descriptor.bluetoothNameSubstring = "Dawggles"
         descriptor.supportedOptions = [.bluetoothPairingLE]
+        descriptor.ssid = Self.hotspotSSID
 
         let symbol = UIImage(systemName: "eyeglasses") ?? UIImage()
         let item = ASPickerDisplayItem(
