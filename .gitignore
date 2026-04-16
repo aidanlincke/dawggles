@@ -1,14 +1,30 @@
+# macOS
 .DS_Store
-iOS/Dawggles.xcodeproj/xcuserdata
-iOS/Dawggles.xcodeproj/project.xcworkspace/xcuserdata
+
+# Xcode / Swift — user-specific UI state & local build output
+**/xcuserdata/
 *.xcuserstate
+**/DerivedData/
+**/.derivedData/
+
+# Python
+.venv/
+venv/
 *venv
-*.pyc
+__pycache__/
+*.py[cod]
+
+# Syncthing
+.stfolder
+
+# Binary scratch (Pi camera, screen captures, temp exports)
+# Note: adding real assets (e.g. iOS AppIcon PNGs) may require: git add -f <path>
 *.jpg
 *.jpeg
 *.png
 *.gif
 *.bmp
+*.tif
 *.tiff
 *.ico
 *.webp
@@ -16,5 +32,3 @@ iOS/Dawggles.xcodeproj/project.xcworkspace/xcuserdata
 *.mp4
 *.mov
 *.avi
-.stfolder
-iOS/.derivedData
