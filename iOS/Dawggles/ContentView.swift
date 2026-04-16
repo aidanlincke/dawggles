@@ -7,6 +7,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var connection = DawgglesConnection.shared
+    @StateObject private var accessorySetup = DawgglesAccessorySetup.shared
     @State private var password = ""
     
     var body: some View {
@@ -18,6 +19,42 @@ struct ContentView: View {
             Text("Dawggles")
                 .font(.largeTitle)
                 .bold()
+
+            VStack(spacing: 12) {
+                Text("Bluetooth (Pi)")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 12) {
+                    Button {
+                        accessorySetup.startPairing()
+                    } label: {
+                        Text("Pair Dawggles")
+                            .bold()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        accessorySetup.unpairFromPhone()
+                    } label: {
+                        Text("Unpair")
+                            .bold()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Text(accessorySetup.status.isEmpty ? "Run pair.py on the Pi, then tap Pair Dawggles." : accessorySetup.status)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 40)
             
             VStack(alignment: .leading, spacing: 10) {
                 Text("Pi Password:")
@@ -69,6 +106,8 @@ struct ContentView: View {
     }
 }
 
-#Preview {
-    ContentView()
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
 }

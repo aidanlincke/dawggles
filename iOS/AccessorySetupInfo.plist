@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAccessorySetupSupports</key>
+	<array>
+		<string>Bluetooth</string>
+	</array>
+	<key>NSAccessorySetupBluetoothCompanyIdentifiers</key>
+	<array/>
+	<key>NSAccessorySetupBluetoothNames</key>
+	<array>
+		<string>Dawggles</string>
+	</array>
+	<key>NSAccessorySetupBluetoothServices</key>
+	<array>
+		<string>0000D100-0000-1000-8000-00805F9B34FB</string>
+	</array>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Dawggles uses Bluetooth to find your glasses and complete setup.</string>
+</dict>
+</plist>

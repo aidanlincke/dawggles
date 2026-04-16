@@ -1,6 +1,7 @@
 .DS_Store
 iOS/Dawggles.xcodeproj/xcuserdata
 iOS/Dawggles.xcodeproj/project.xcworkspace/xcuserdata
+*.xcuserstate
 *venv
 *.pyc
 *.jpg
@@ -15,3 +16,5 @@ iOS/Dawggles.xcodeproj/project.xcworkspace/xcuserdata
 *.mp4
 *.mov
 *.avi
+.stfolder
+iOS/.derivedData
