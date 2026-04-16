@@ -40,11 +40,17 @@ reset = None
 display = adafruit_ssd1306.SSD1306_SPI(128, 64, spi, dc, reset, cs)
 
 # --- LET'S TEST IT! ---
-print("Dawggles text, contrast=5, SEG remap 0xA0. Ctrl+C to stop.")
+print("Lorem fill test, contrast=20, SEG remap 0xA0. Ctrl+C to stop.")
 
-display.contrast(5)
+display.contrast(20)
 display.write_cmd(_SET_SEG_REMAP_A0)
-display_text(display, "DAWGGLES")
+
+display.fill(0)
+lorem = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut"
+# 16 chars per row, 8 rows = 128 chars total
+for row in range(8):
+    display.text(lorem[row * 16 : (row + 1) * 16], 0, row * 8, 1)
+display.show()
 
 try:
     while True:
