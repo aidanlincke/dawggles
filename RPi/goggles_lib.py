@@ -411,14 +411,14 @@ class Display:
             except Exception as e:
                 log.warning("OLED pairing waiting: %s", e)
 
-    def show_pairing_code(self, code: str):
-        """Display the 6-digit BLE pairing code in large text with confirm hint."""
+    def show_pairing_code(self, code: str, secs_left: int = 30):
+        """Display the 6-digit BLE pairing code in large text with live countdown."""
         with self.display_lock:
             if self.temp_message_timer:
                 self.temp_message_timer.cancel()
                 self.temp_message_timer = None
             if not self.hardware_available:
-                log.info("OLED [pairing code]: %s", code)
+                log.info("OLED [pairing code]: %s  %ds", code, secs_left)
                 return
             try:
                 self.oled.fill(0)
@@ -435,14 +435,44 @@ class Display:
                     cx = max(0, (self.oled.width - len(code) * 6) // 2)
                     self.oled.text(code, cx, 18, 1)
 
-                hint1 = "BTN = CONFIRM"
-                self.oled.text(hint1, max(0, (self.oled.width - len(hint1) * 6) // 2), 40, 1)
-                hint2 = "30s timeout"
-                self.oled.text(hint2, max(0, (self.oled.width - len(hint2) * 6) // 2), 52, 1)
+                hint = "BTN = CONFIRM"
+                self.oled.text(hint, max(0, (self.oled.width - len(hint) * 6) // 2), 40, 1)
+
+                # Countdown — right-align so digits don't jump around
+                countdown = f"{secs_left:2d}s"
+                self.oled.text(countdown, max(0, (self.oled.width - len(countdown) * 6) // 2), 52, 1)
 
                 self.oled.show()
             except Exception as e:
                 log.warning("OLED pairing code: %s", e)
+
+    def show_pairing_confirmed(self):
+        """Display a checkmark and 'WAITING...' after the user confirms the pairing code."""
+        with self.display_lock:
+            if self.temp_message_timer:
+                self.temp_message_timer.cancel()
+                self.temp_message_timer = None
+            if not self.hardware_available:
+                log.info("OLED [pairing]: confirmed — waiting for iPhone")
+                return
+            try:
+                self.oled.fill(0)
+
+                # Checkmark: two line segments drawn 3× for ~3px thickness
+                # p1 → p2 is the short down-right stroke; p2 → p3 is the long up-right stroke
+                p1 = (28, 28)
+                p2 = (46, 44)
+                p3 = (90, 10)
+                for dy in (-1, 0, 1):
+                    self.oled.line(p1[0], p1[1] + dy, p2[0], p2[1] + dy, 1)
+                    self.oled.line(p2[0], p2[1] + dy, p3[0], p3[1] + dy, 1)
+
+                msg = "WAITING..."
+                self.oled.text(msg, max(0, (self.oled.width - len(msg) * 6) // 2), 54, 1)
+
+                self.oled.show()
+            except Exception as e:
+                log.warning("OLED pairing confirmed: %s", e)
 
     def update_display(self, data):
         with self.display_lock:

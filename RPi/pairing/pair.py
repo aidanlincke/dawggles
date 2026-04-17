@@ -131,18 +131,32 @@ class DawgglesAgent(dbus.service.Object):
                  code, _CONFIRM_TIMEOUT_SECS)
 
         confirmed = threading.Event()
+        stop_countdown = threading.Event()
 
         def on_button(click_count):
             if click_count >= 1:
                 confirmed.set()
 
         self._button.update_callback(on_button)
-        self._display.show_pairing_code(code)
+        self._display.show_pairing_code(code, _CONFIRM_TIMEOUT_SECS)
+
+        def _countdown():
+            for secs_left in range(_CONFIRM_TIMEOUT_SECS - 1, -1, -1):
+                # Wait 1s or until stopped early (button press or timeout)
+                if stop_countdown.wait(timeout=1.0):
+                    break
+                self._display.show_pairing_code(code, secs_left)
+
+        countdown_thread = threading.Thread(target=_countdown, daemon=True)
+        countdown_thread.start()
 
         try:
             accepted = confirmed.wait(timeout=_CONFIRM_TIMEOUT_SECS)
         finally:
+            stop_countdown.set()
             self._button.update_callback(None)
+
+        countdown_thread.join(timeout=2.0)
 
         if not accepted:
             log.info("BLE pairing: timed out — rejecting, still advertising")
@@ -152,6 +166,7 @@ class DawgglesAgent(dbus.service.Object):
             )
 
         log.info("BLE pairing: confirmed by button press")
+        self._display.show_pairing_confirmed()
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
