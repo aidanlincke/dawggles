@@ -8,6 +8,7 @@
 import AccessorySetupKit
 import Combine
 import CoreBluetooth
+import NetworkExtension
 import SwiftUI
 import UIKit
 
@@ -88,21 +89,26 @@ final class DawgglesAccessorySetup: ObservableObject {
 
     // MARK: - Hotspot
 
-    /// Joins the accessory's Wi-Fi hotspot via AccessorySetupKit.
-    /// Credentials are hardcoded — replace once the accessory advertises them dynamically.
+    /// Joins the accessory's Wi-Fi hotspot via NEHotspotConfigurationManager.
+    /// Uses the accessory-linked API so the user isn't re-prompted — consent was already
+    /// given when they approved the accessory in the AccessorySetupKit picker.
+    /// Requires `NSAccessorySetupKitSupports` to include "WiFi" and the pairing
+    /// descriptor to have had `ssid` set.
     func joinHotspot(accessory: ASAccessory) {
-        guard let session else {
-            status = "Session unavailable — cannot join hotspot."
-            return
-        }
-        let options = ASAccessoryHotspotDescriptor(ssid: Self.hotspotSSID, passphrase: Self.hotspotPassword)
-        session.joinAccessoryHotspot(accessory, options: options) { [weak self] error in
+        NEHotspotConfigurationManager.shared.joinAccessoryHotspot(accessory,
+                                                                  passphrase: Self.hotspotPassword) { [weak self] error in
             Task { @MainActor in
                 guard let self else { return }
                 if let error {
-                    self.status = "Hotspot join failed: \(error.localizedDescription)"
+                    let ns = error as NSError
+                    if ns.domain == NEHotspotConfigurationErrorDomain,
+                       ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue {
+                        self.status = "Already joined \(Self.hotspotSSID) Wi-Fi"
+                    } else {
+                        self.status = "Hotspot join failed: \(error.localizedDescription)"
+                    }
                 } else {
-                    self.status = "✅ Joined \(Self.hotspotSSID) Wi-Fi"
+                    self.status = "Joined \(Self.hotspotSSID) Wi-Fi"
                 }
             }
         }
@@ -217,3 +223,4 @@ final class DawgglesAccessorySetup: ObservableObject {
         return !names.isEmpty && !services.isEmpty && !companyIDs.isEmpty
     }
 }
+

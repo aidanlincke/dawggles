@@ -5,10 +5,12 @@
 	<key>NSAccessorySetupSupports</key>
 	<array>
 		<string>Bluetooth</string>
+		<string>WiFi</string>
 	</array>
 	<key>NSAccessorySetupKitSupports</key>
 	<array>
 		<string>Bluetooth</string>
+		<string>WiFi</string>
 	</array>
 	<key>NSAccessorySetupBluetoothCompanyIdentifiers</key>
 	<array>
