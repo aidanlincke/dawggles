@@ -1,51 +1,55 @@
 #!/usr/bin/env python3
 """
-pair.py — Advertise "Dawggles" over BLE and pair with one iPhone via Numeric Comparison.
+pairing/pair.py — BLE pairing for Dawggles (BlueZ Numeric Comparison).
+
+Exposes two public functions for use by main.py:
+
+    is_paired()                        → bool
+    run_pairing_flow(display, button)  → bool   (True = paired successfully)
 
 System packages required (not pip):
     sudo apt install python3-dbus python3-gi
-
-Usage:
-    python3 pair.py
-    # If permission errors: sudo python3 pair.py
-    # Or add your user to the bluetooth group: sudo usermod -aG bluetooth $USER
-
-The Pi will appear as "Dawggles" in iPhone Settings > Bluetooth.
-Tap it, confirm the 6-digit code matches on both screens, done.
 """
 
 import sys
+import threading
+import time
+import logging
+
 import dbus
 import dbus.service
 import dbus.mainloop.glib
 from gi.repository import GLib
 
+log = logging.getLogger(__name__)
+
 # ── BlueZ D-Bus constants ──────────────────────────────────────────────────────
-BLUEZ_SERVICE       = "org.bluez"
-BLUEZ_PATH          = "/org/bluez"
-ADAPTER_PATH        = "/org/bluez/hci0"
-ADAPTER_IFACE       = "org.bluez.Adapter1"
-DEVICE_IFACE        = "org.bluez.Device1"
-AGENT_MANAGER_IFACE = "org.bluez.AgentManager1"
-AGENT_IFACE         = "org.bluez.Agent1"
+BLUEZ_SERVICE        = "org.bluez"
+BLUEZ_PATH           = "/org/bluez"
+ADAPTER_PATH         = "/org/bluez/hci0"
+ADAPTER_IFACE        = "org.bluez.Adapter1"
+DEVICE_IFACE         = "org.bluez.Device1"
+AGENT_MANAGER_IFACE  = "org.bluez.AgentManager1"
+AGENT_IFACE          = "org.bluez.Agent1"
 LE_ADV_MANAGER_IFACE = "org.bluez.LEAdvertisingManager1"
 LE_ADV_IFACE         = "org.bluez.LEAdvertisement1"
-PROPS_IFACE         = "org.freedesktop.DBus.Properties"
-OBJ_MANAGER_IFACE   = "org.freedesktop.DBus.ObjectManager"
+PROPS_IFACE          = "org.freedesktop.DBus.Properties"
+OBJ_MANAGER_IFACE    = "org.freedesktop.DBus.ObjectManager"
 
-AGENT_PATH  = "/org/dawggles/agent"
-ADV_PATH    = "/org/dawggles/advertisement0"
-DEVICE_NAME = "Dawggles"
+AGENT_PATH        = "/org/dawggles/agent"
+ADV_PATH          = "/org/dawggles/advertisement0"
+DEVICE_NAME       = "Dawggles"
 PAIR_SERVICE_UUID = "0000d100-0000-1000-8000-00805f9b34fb"
+
+_CONFIRM_TIMEOUT_SECS = 30
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def get_bonded_devices(bus):
     manager = dbus.Interface(bus.get_object(BLUEZ_SERVICE, "/"), OBJ_MANAGER_IFACE)
-    objects = manager.GetManagedObjects()
     bonded = []
-    for path, ifaces in objects.items():
+    for path, ifaces in manager.GetManagedObjects().items():
         if DEVICE_IFACE in ifaces:
             d = ifaces[DEVICE_IFACE]
             if d.get("Paired", False):
@@ -62,24 +66,16 @@ def set_adapter(bus, discoverable, pairable):
     props.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(discoverable))
     props.Set(ADAPTER_IFACE, "Pairable",     dbus.Boolean(pairable))
     if discoverable:
-        # 0 = no timeout, stay discoverable until we turn it off manually
         props.Set(ADAPTER_IFACE, "DiscoverableTimeout", dbus.UInt32(0))
 
 
 def adapter_supports_le_advertising(bus):
     manager = dbus.Interface(bus.get_object(BLUEZ_SERVICE, "/"), OBJ_MANAGER_IFACE)
-    objects = manager.GetManagedObjects()
-    adapter_ifaces = objects.get(ADAPTER_PATH, {})
-    return LE_ADV_MANAGER_IFACE in adapter_ifaces
+    return LE_ADV_MANAGER_IFACE in manager.GetManagedObjects().get(ADAPTER_PATH, {})
 
 
-def register_advertisement_or_raise(ad_mgr, timeout_seconds=15):
-    """
-    Register LE advertisement asynchronously while pumping GLib.
-
-    A synchronous RegisterAdvertisement call can deadlock/time out when BlueZ
-    needs to call back into our local advertisement object during registration.
-    """
+def _register_advertisement(ad_mgr, timeout_seconds=15):
+    """Register LE advertisement asynchronously (synchronous call can deadlock BlueZ)."""
     wait_loop = GLib.MainLoop()
     state = {"ok": False, "error": None}
 
@@ -92,129 +88,113 @@ def register_advertisement_or_raise(ad_mgr, timeout_seconds=15):
         wait_loop.quit()
 
     def on_timeout():
-        state["error"] = TimeoutError(
-            f"RegisterAdvertisement timed out after {timeout_seconds}s"
-        )
+        state["error"] = TimeoutError(f"RegisterAdvertisement timed out after {timeout_seconds}s")
         wait_loop.quit()
         return False
 
     timeout_id = GLib.timeout_add_seconds(timeout_seconds, on_timeout)
-    ad_mgr.RegisterAdvertisement(
-        ADV_PATH,
-        {},
-        reply_handler=on_reply,
-        error_handler=on_error,
-    )
+    ad_mgr.RegisterAdvertisement(ADV_PATH, {}, reply_handler=on_reply, error_handler=on_error)
     wait_loop.run()
-
     try:
         GLib.source_remove(timeout_id)
     except Exception:
         pass
-
     if state["ok"]:
         return
     err = state["error"] or RuntimeError("Unknown LE advertisement failure")
-    if isinstance(err, Exception):
-        raise err
-    raise RuntimeError(str(err))
+    raise err if isinstance(err, Exception) else RuntimeError(str(err))
 
 
-# ── BlueZ Agent1 implementation ────────────────────────────────────────────────
+# ── BlueZ Agent1 ───────────────────────────────────────────────────────────────
 
 class DawgglesAgent(dbus.service.Object):
     """
     BlueZ agent with capability "DisplayYesNo".
-
-    When iOS initiates pairing, BlueZ calls RequestConfirmation() with a
-    6-digit code that is independently derived from the ECDH key exchange on
-    both sides. If the codes match, the link is authenticated (MITM-protected).
-    The user confirms on each device — no code is typed, just verified visually.
+    Shows the Numeric Comparison passkey on the OLED and waits for a button press
+    (or a 30-second timeout) to confirm or reject the pairing.
     """
 
-    def __init__(self, bus, path, loop):
+    def __init__(self, bus, path, loop, display, button):
         super().__init__(bus, path)
-        self._loop = loop
+        self._loop    = loop
+        self._display = display
+        self._button  = button
 
     @dbus.service.method(AGENT_IFACE)
     def Release(self):
-        print("Agent released by BlueZ.")
+        pass
 
-    # ── Numeric Comparison — the method that actually fires ────────────────────
     @dbus.service.method(AGENT_IFACE, in_signature="ou")
     def RequestConfirmation(self, device, passkey):
-        code = int(passkey)
-        print()
-        print("┌─────────────────────────────┐")
-        print(f"│   PAIRING CODE:  {code:06d}   │")
-        print("└─────────────────────────────┘")
-        print("Check that this matches the code on your iPhone.")
-        print("Press Enter to confirm, or type 'no' + Enter to reject.\n")
-        try:
-            answer = input("> ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print("\nRejecting.")
-            raise dbus.exceptions.DBusException(
-                "Rejected", name="org.bluez.Error.Rejected"
-            )
-        if answer == "no":
-            raise dbus.exceptions.DBusException(
-                "Rejected by user", name="org.bluez.Error.Rejected"
-            )
-        print("Confirmed — finishing pairing handshake...")
+        code = f"{int(passkey):06d}"
+        log.info("BLE pairing: code %s — press button to confirm (%ds timeout)",
+                 code, _CONFIRM_TIMEOUT_SECS)
 
-    # ── Remaining Agent1 methods (required by interface, not used for our flow) ─
+        confirmed = threading.Event()
+
+        def on_button(click_count):
+            if click_count >= 1:
+                confirmed.set()
+
+        self._button.update_callback(on_button)
+        self._display.show_pairing_code(code)
+
+        try:
+            accepted = confirmed.wait(timeout=_CONFIRM_TIMEOUT_SECS)
+        finally:
+            self._button.update_callback(None)
+
+        if not accepted:
+            log.info("BLE pairing: timed out — rejecting, still advertising")
+            self._display.show_pairing_waiting()
+            raise dbus.exceptions.DBusException(
+                "Timed out", name="org.bluez.Error.Rejected"
+            )
+
+        log.info("BLE pairing: confirmed by button press")
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
-        raise dbus.exceptions.DBusException(
-            "Not supported", name="org.bluez.Error.Rejected"
-        )
+        raise dbus.exceptions.DBusException("Not supported", name="org.bluez.Error.Rejected")
 
     @dbus.service.method(AGENT_IFACE, in_signature="os")
     def DisplayPinCode(self, device, pincode):
-        print(f"[PIN code: {pincode}]")
+        log.info("BLE: DisplayPinCode %s", pincode)
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
-        raise dbus.exceptions.DBusException(
-            "Not supported", name="org.bluez.Error.Rejected"
-        )
+        raise dbus.exceptions.DBusException("Not supported", name="org.bluez.Error.Rejected")
 
     @dbus.service.method(AGENT_IFACE, in_signature="ouq")
     def DisplayPasskey(self, device, passkey, entered):
-        # Fallback if Numeric Comparison somehow isn't negotiated
-        print(f"[Passkey: {int(passkey):06d}  entered so far: {int(entered)}]")
+        log.info("BLE: DisplayPasskey %06d (entered: %d)", int(passkey), int(entered))
 
     @dbus.service.method(AGENT_IFACE, in_signature="o")
     def RequestAuthorization(self, device):
-        pass  # accept
+        pass
 
     @dbus.service.method(AGENT_IFACE, in_signature="os")
     def AuthorizeService(self, device, uuid):
-        pass  # accept
+        pass
 
     @dbus.service.method(AGENT_IFACE)
     def Cancel(self):
-        print("Pairing request cancelled by remote device.")
+        log.info("BLE: pairing cancelled by remote device")
+        self._display.show_pairing_waiting()
 
+
+# ── LE Advertisement ───────────────────────────────────────────────────────────
 
 class DawgglesAdvertisement(dbus.service.Object):
-    """
-    LE advertisement that makes AccessorySetupKit discovery deterministic.
-
-    AccessorySetupKit in iOS filters by advertised BLE metadata (service UUID,
-    optional name substring, manufacturer data). Adapter discoverability alone
-    is not enough for those LE-specific filters.
-    """
+    """LE advertisement for AccessorySetupKit discovery."""
 
     def __init__(self, bus, path):
         super().__init__(bus, path)
         self._properties = {
             LE_ADV_IFACE: {
-                "Type": dbus.String("peripheral"),
-                "ServiceUUIDs": dbus.Array([dbus.String(PAIR_SERVICE_UUID)], signature="s"),
-                "LocalName": dbus.String(DEVICE_NAME),
+                "Type":           dbus.String("peripheral"),
+                "ServiceUUIDs":   dbus.Array([dbus.String(PAIR_SERVICE_UUID)], signature="s"),
+                "LocalName":      dbus.String(DEVICE_NAME),
                 "IncludeTxPower": dbus.Boolean(True),
             }
         }
@@ -229,75 +209,105 @@ class DawgglesAdvertisement(dbus.service.Object):
 
     @dbus.service.method(LE_ADV_IFACE)
     def Release(self):
-        print("LE advertisement released by BlueZ.")
+        pass
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Public API ─────────────────────────────────────────────────────────────────
 
-def main():
-    # Must be called before creating any D-Bus connections
-    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-    bus  = dbus.SystemBus()
+def is_paired() -> bool:
+    """Return True if at least one device is already BLE-bonded to this adapter."""
+    try:
+        bus = dbus.SystemBus()
+        return len(get_bonded_devices(bus)) > 0
+    except Exception as e:
+        log.warning("is_paired check failed: %s", e)
+        return False
+
+
+def run_pairing_flow(display, button) -> bool:
+    """
+    Advertise BLE as "Dawggles" and wait for an iPhone to complete pairing.
+
+    When iOS initiates Numeric Comparison, the 6-digit code is shown on the OLED.
+    The user presses the action button to confirm; the pairing is rejected after
+    30 seconds of inactivity and the device keeps advertising for the next attempt.
+
+    Blocks until pairing succeeds (returns True) or a fatal BLE setup error
+    occurs (returns False).
+    """
+    try:
+        bus = dbus.SystemBus()
+    except Exception as e:
+        log.error("BLE: cannot connect to D-Bus: %s", e)
+        display.show_temporary_message(["BLE UNAVAIL", "No D-Bus"], duration=4.0)
+        return False
+
     loop = GLib.MainLoop()
+    result = {"success": False}
 
-    # ── 1. Enforce single pairing ──────────────────────────────────────────────
-    bonded = get_bonded_devices(bus)
-    if bonded:
-        print("Already paired to a device — run unpair.py first.\n")
-        for d in bonded:
-            print(f"  {d['name']}  ({d['address']})")
-        sys.exit(1)
+    # Name the adapter
+    try:
+        adapter_props = dbus.Interface(
+            bus.get_object(BLUEZ_SERVICE, ADAPTER_PATH), PROPS_IFACE
+        )
+        adapter_props.Set(ADAPTER_IFACE, "Alias", DEVICE_NAME)
+    except Exception as e:
+        log.warning("BLE: could not set adapter alias: %s", e)
 
-    # ── 2. Set the adapter name ────────────────────────────────────────────────
-    adapter_props = dbus.Interface(
-        bus.get_object(BLUEZ_SERVICE, ADAPTER_PATH), PROPS_IFACE
-    )
-    adapter_props.Set(ADAPTER_IFACE, "Alias", DEVICE_NAME)
-
-    # ── 3. Register our agent with "DisplayYesNo" capability ───────────────────
-    #    DisplayYesNo + iOS's KeyboardDisplay → BlueZ negotiates Numeric Comparison
-    agent     = DawgglesAgent(bus, AGENT_PATH, loop)
+    # Register agent
+    agent = DawgglesAgent(bus, AGENT_PATH, loop, display, button)
     agent_mgr = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, BLUEZ_PATH), AGENT_MANAGER_IFACE
     )
-    agent_mgr.RegisterAgent(AGENT_PATH, "DisplayYesNo")
-    agent_mgr.RequestDefaultAgent(AGENT_PATH)
-    print("Agent registered  (capability: DisplayYesNo  →  Numeric Comparison)")
+    try:
+        agent_mgr.RegisterAgent(AGENT_PATH, "DisplayYesNo")
+        agent_mgr.RequestDefaultAgent(AGENT_PATH)
+        log.info("BLE: agent registered (DisplayYesNo → Numeric Comparison)")
+    except Exception as e:
+        log.error("BLE: agent registration failed: %s", e)
+        display.show_temporary_message(["BLE ERROR", "Agent fail"], duration=4.0)
+        return False
 
-    # ── 4. Start LE advertising for AccessorySetupKit discovery ───────────────
+    # LE advertising
     if not adapter_supports_le_advertising(bus):
-        print("❌ Adapter does not expose LEAdvertisingManager1.")
-        print("   In-app AccessorySetupKit discovery requires BLE LE advertising support.")
-        sys.exit(1)
+        log.error("BLE: adapter has no LEAdvertisingManager1")
+        display.show_temporary_message(["BLE ERROR", "No LE advert"], duration=4.0)
+        try:
+            agent_mgr.UnregisterAgent(AGENT_PATH)
+        except Exception:
+            pass
+        return False
+
     ad_mgr = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, ADAPTER_PATH), LE_ADV_MANAGER_IFACE
     )
     advertisement = DawgglesAdvertisement(bus, ADV_PATH)
     try:
-        register_advertisement_or_raise(ad_mgr, timeout_seconds=15)
+        _register_advertisement(ad_mgr, timeout_seconds=15)
+        log.info("BLE: advertising as '%s' (service %s)", DEVICE_NAME, PAIR_SERVICE_UUID)
     except Exception as e:
-        print(f"❌ Could not start LE advertisement required for in-app pairing: {e}")
-        print("   Ensure bluetoothd supports LEAdvertisingManager1 and no other advertiser is active.")
-        sys.exit(1)
-    print(f"LE advertisement started  (name: {DEVICE_NAME}, service: {PAIR_SERVICE_UUID})")
+        log.error("BLE: advertisement failed: %s", e)
+        display.show_temporary_message(["BLE ERROR", "Advert fail"], duration=4.0)
+        try:
+            agent_mgr.UnregisterAgent(AGENT_PATH)
+        except Exception:
+            pass
+        return False
 
-    # ── 5. Listen for the Paired property flipping True ────────────────────────
+    # Watch for the Paired property flipping True
     def on_props_changed(iface, changed, invalidated, path=None):
-        if iface != DEVICE_IFACE:
-            return
-        if not changed.get("Paired", False):
+        if iface != DEVICE_IFACE or not changed.get("Paired", False):
             return
         try:
-            dev_props = dbus.Interface(
-                bus.get_object(BLUEZ_SERVICE, path), PROPS_IFACE
-            )
-            name = str(dev_props.Get(DEVICE_IFACE, "Name"))
-            addr = str(dev_props.Get(DEVICE_IFACE, "Address"))
-            print(f"\n✅  Paired with: {name}  ({addr})")
+            dev_props = dbus.Interface(bus.get_object(BLUEZ_SERVICE, path), PROPS_IFACE)
             dev_props.Set(DEVICE_IFACE, "Trusted", dbus.Boolean(True))
-            print("✅  Marked as trusted (auto-reconnect enabled)")
+            name = str(dev_props.Get(DEVICE_IFACE, "Name"))
+            log.info("BLE: paired with '%s' — marked trusted", name)
+            display.show_temporary_message(["PAIRED!", name[:12]], duration=2.0)
         except Exception:
-            print("\n✅  Pairing complete!")
+            log.info("BLE: pairing complete")
+            display.show_temporary_message(["PAIRED!"], duration=2.0)
+        result["success"] = True
         loop.quit()
 
     bus.add_signal_receiver(
@@ -307,25 +317,65 @@ def main():
         path_keyword="path",
     )
 
-    # ── 6. Go discoverable and block until pairing completes or user cancels ───
     set_adapter(bus, discoverable=True, pairable=True)
-    print(f'\nDawggles is discoverable. Open the Dawggles iOS app and tap "Pair Dawggles".')
-    print(f'Fallback path still works: iPhone Settings > Bluetooth > "{DEVICE_NAME}".')
-    print("Ctrl+C to cancel.\n")
+    display.show_pairing_waiting()
+    log.info("BLE: discoverable — open the Dawggles app and tap 'Pair'")
 
     try:
         loop.run()
     except KeyboardInterrupt:
-        print("\nCancelled.")
+        log.info("BLE: pairing cancelled (interrupt)")
     finally:
         try:
             set_adapter(bus, discoverable=False, pairable=False)
+        except Exception:
+            pass
+        try:
             ad_mgr.UnregisterAdvertisement(ADV_PATH)
+        except Exception:
+            pass
+        try:
             agent_mgr.UnregisterAgent(AGENT_PATH)
         except Exception:
             pass
-        print("Discoverable mode off.")
 
+    return result["success"]
+
+
+# ── Standalone CLI (original behaviour) ───────────────────────────────────────
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
+    bus = dbus.SystemBus()
+    bonded = get_bonded_devices(bus)
+    if bonded:
+        print("Already paired — run unpair.py first.")
+        for d in bonded:
+            print(f"  {d['name']}  ({d['address']})")
+        sys.exit(1)
+
+    class _CliDisplay:
+        def show_pairing_waiting(self):
+            print("Advertising… open the Dawggles app and tap 'Pair Dawggles'.")
+        def show_pairing_code(self, code):
+            print(f"\n┌─────────────────────────────┐")
+            print(f"│   PAIRING CODE:  {code}   │")
+            print(f"└─────────────────────────────┘")
+            print("Check that this matches the code on your iPhone.")
+        def show_temporary_message(self, lines, duration=2.0):
+            print(" | ".join(lines))
+
+    class _CliButton:
+        def update_callback(self, cb):
+            if cb is None:
+                return
+            try:
+                input("Press Enter to confirm (or Ctrl+C to reject): ")
+                cb(1)
+            except (KeyboardInterrupt, EOFError):
+                pass
+
+    success = run_pairing_flow(_CliDisplay(), _CliButton())
+    sys.exit(0 if success else 1)

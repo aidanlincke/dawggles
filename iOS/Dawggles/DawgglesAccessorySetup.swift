@@ -27,6 +27,7 @@ final class DawgglesAccessorySetup: ObservableObject {
     @Published var status: String = ""
     @Published private(set) var isSessionReady = false
     @Published private(set) var pairedAccessory: ASAccessory?
+    @Published private(set) var isPairing = false
 
     private var session: ASAccessorySession?
     /// Same queue as Apple’s AccessorySetupKit samples; keeps callbacks off the SwiftUI main actor lock.
@@ -49,8 +50,9 @@ final class DawgglesAccessorySetup: ObservableObject {
         }
     }
 
-    /// Run `pair.py` on the Pi first so the device is discoverable, then call this to show the system picker.
+    /// Show the system picker to pair a Dawggles device.
     func startPairing() {
+        isPairing = true
         pendingPickerAfterActivation = true
         ensureSessionActivated()
         if isSessionReady {
@@ -134,10 +136,12 @@ final class DawgglesAccessorySetup: ObservableObject {
             } else if let accessory = session?.accessories.first(where: {
                 $0.displayName.localizedCaseInsensitiveContains("Dawggles")
             }) ?? session?.accessories.first {
+                pairedAccessory = accessory
                 joinHotspot(accessory: accessory)
             }
         case .accessoryAdded:
             guard let accessory = event.accessory else { break }
+            isPairing = false
             pairedAccessory = accessory
             let name = accessory.displayName
             status = "Added \(name). Joining hotspot…"
@@ -145,11 +149,12 @@ final class DawgglesAccessorySetup: ObservableObject {
         case .accessoryChanged:
             break
         case .accessoryRemoved:
-            status = "Accessory removed from this app’s list."
+            pairedAccessory = nil
+            status = ""
         case .pickerDidPresent:
             status = "Choose Dawggles and confirm pairing if prompted."
         case .pickerDidDismiss:
-            break
+            isPairing = false
         case .pickerSetupPairing:
             status = "Pairing… if you see a code, confirm it matches the Pi."
         case .pickerSetupBridging:
@@ -157,6 +162,7 @@ final class DawgglesAccessorySetup: ObservableObject {
         case .pickerSetupRename:
             break
         case .pickerSetupFailed:
+            isPairing = false
             if let error = event.error {
                 status = "Setup failed: \(error.localizedDescription)"
             } else {
@@ -167,6 +173,7 @@ final class DawgglesAccessorySetup: ObservableObject {
         case .invalidated:
             isSessionReady = false
             didStartActivation = false
+            isPairing = false
         case .migrationComplete:
             break
         case .unknown:

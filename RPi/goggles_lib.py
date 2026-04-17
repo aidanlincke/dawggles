@@ -157,8 +157,32 @@ class CameraClient:
     def initialize_camera(self, config):
         if not self.camera:
             self.camera = Picamera2()
-        self.camera.configure(self.camera.create_still_configuration(main=config))
+
+        still_config = None
+        try:
+            # PiCamera2 rotates 180 degrees by applying both horizontal and vertical flips.
+            from libcamera import Transform
+            still_config = self.camera.create_still_configuration(
+                main=config,
+                transform=Transform(hflip=True, vflip=True),
+            )
+            log.info("camera: applying 180-degree transform (hflip + vflip)")
+        except Exception as e:
+            log.warning("camera: could not apply 180-degree transform, using default orientation: %s", e)
+            still_config = self.camera.create_still_configuration(main=config)
+
+        self.camera.configure(still_config)
         self.camera.start()
+
+        # Pi Camera 3 (IMX708): explicitly use the full sensor area for maximum FOV.
+        # Without this picamera2 may default to a centred crop, narrowing the field of view.
+        try:
+            max_crop = self.camera.camera_properties.get('ScalerCropMaximum')
+            if max_crop:
+                self.camera.set_controls({'ScalerCrop': max_crop})
+                log.info("camera: ScalerCrop set to full sensor area %s for maximum FOV", max_crop)
+        except Exception as e:
+            log.warning("camera: could not set ScalerCrop: %s", e)
 
     def start_capture_loop(self):
         if not self.camera:
@@ -365,6 +389,60 @@ class Display:
                 if self.hardware_available:
                     self.oled.fill(0)
                     self.oled.show()
+
+    def show_pairing_waiting(self):
+        """Display 'OPEN APP / to pair' while BLE is advertising."""
+        with self.display_lock:
+            if self.temp_message_timer:
+                self.temp_message_timer.cancel()
+                self.temp_message_timer = None
+            if not self.hardware_available:
+                log.info("OLED [pairing]: OPEN APP to pair")
+                return
+            try:
+                self.oled.fill(0)
+                lines = ["OPEN APP", "to pair"]
+                total_h = len(lines) * 10
+                sy = max(0, (self.oled.height - total_h) // 2)
+                for i, line in enumerate(lines):
+                    tx = max(0, (self.oled.width - len(line) * 6) // 2)
+                    self.oled.text(line, tx, sy + i * 10, 1)
+                self.oled.show()
+            except Exception as e:
+                log.warning("OLED pairing waiting: %s", e)
+
+    def show_pairing_code(self, code: str):
+        """Display the 6-digit BLE pairing code in large text with confirm hint."""
+        with self.display_lock:
+            if self.temp_message_timer:
+                self.temp_message_timer.cancel()
+                self.temp_message_timer = None
+            if not self.hardware_available:
+                log.info("OLED [pairing code]: %s", code)
+                return
+            try:
+                self.oled.fill(0)
+
+                label = "PAIR CODE"
+                self.oled.text(label, max(0, (self.oled.width - len(label) * 6) // 2), 2, 1)
+
+                # Large code — size=2 gives 12px-wide, 16px-tall chars
+                try:
+                    cx = max(0, (self.oled.width - len(code) * 12) // 2)
+                    self.oled.text(code, cx, 16, 1, size=2)
+                except TypeError:
+                    # Older adafruit-framebuf without size param
+                    cx = max(0, (self.oled.width - len(code) * 6) // 2)
+                    self.oled.text(code, cx, 18, 1)
+
+                hint1 = "BTN = CONFIRM"
+                self.oled.text(hint1, max(0, (self.oled.width - len(hint1) * 6) // 2), 40, 1)
+                hint2 = "30s timeout"
+                self.oled.text(hint2, max(0, (self.oled.width - len(hint2) * 6) // 2), 52, 1)
+
+                self.oled.show()
+            except Exception as e:
+                log.warning("OLED pairing code: %s", e)
 
     def update_display(self, data):
         with self.display_lock:

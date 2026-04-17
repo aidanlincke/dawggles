@@ -7,8 +7,11 @@ Start the hotspot, then run:
 import logging
 import time
 
+import dbus.mainloop.glib
+
 from goggles_lib import CameraClient, Display, GoggleButton, WebSocketServer, SharedClass
 from app_manager import start_app, switch_to_next_app
+from pairing.pair import is_paired, run_pairing_flow
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -16,12 +19,27 @@ CAMERA_CONFIG = {"size": (1280, 720)}
 
 
 def main() -> None:
+    # Must be called before any dbus.SystemBus() connection (pairing uses BlueZ).
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
     shared = SharedClass()
     shared.display = Display(shared)
+
+    # Action button initialised early — needed for pairing code confirmation.
+    shared.button = GoggleButton(shared_class=shared, pin=4, button_callback=None)
+
+    # ── Pairing ──────────────────────────────────────────────────────────────
+    if not is_paired():
+        logging.info("No paired device found — starting pairing flow.")
+        run_pairing_flow(shared.display, shared.button)
+        # run_pairing_flow blocks until the device is paired (or a fatal BLE
+        # error occurs).  Either way we continue; the WebSocket handshake will
+        # surface any remaining issues.
+
+    # ── Normal startup ────────────────────────────────────────────────────────
     shared.camera_client = CameraClient(shared, CAMERA_CONFIG)
     shared.server = WebSocketServer(shared, host="0.0.0.0", port=8765)
 
-    # Give the server thread a brief moment to bind and expose startup errors early.
     for _ in range(30):
         if shared.server.is_listening:
             break
@@ -40,11 +58,6 @@ def main() -> None:
 
     logging.info("Phone connected! Starting Translation App...")
     shared.display.reset_display()
-
-    # App callback button: GPIO 4 (pin 7)
-    shared.button = GoggleButton(
-        shared_class=shared, pin=4, button_callback=None
-    )
 
     # Cycle apps button: GPIO 23 (pin 16)
     def cycle_callback(click_count):

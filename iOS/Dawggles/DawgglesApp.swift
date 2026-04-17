@@ -12,6 +12,8 @@ struct DawgglesApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(DawgglesConnection.shared)
+                .environmentObject(DawgglesAccessorySetup.shared)
         }
     }
 }
