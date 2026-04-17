@@ -1,22 +1,14 @@
 """
-Dawggles Pi entry: Dynamic Wi-Fi Hotspot, then TCP.
+Dawggles Pi entry point.
 
-Setup the network FIRST:
-  export DAWGGLES_AP_PASSWORD="your-pin"
-  sudo -E ./network/setup_dawggles_hotspot.sh
-
-Then run:
+Start the hotspot, then run:
   python3 main.py
-
-Leave AP for CMU-DEVICE: sudo ./network/restore_cmu_wifi.sh
 """
 import logging
-import os
 import time
 
-from goggles_lib import CameraClient, Display, GoggleButton, Server, SharedClass
+from goggles_lib import CameraClient, Display, GoggleButton, WebSocketServer, SharedClass
 from app_manager import start_app, switch_to_next_app
-from pairing.pi_ble_peripheral import run_ble_pairing_background
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -26,31 +18,29 @@ CAMERA_CONFIG = {"size": (1280, 720)}
 def main() -> None:
     shared = SharedClass()
     shared.display = Display(shared)
-
-    # 1. Grab the PIN from the environment (set when you ran the hotspot script)
-    pin = os.environ.get("DAWGGLES_AP_PASSWORD", "Unknown")
-    
-    # 2. Show idle state "PAIR IN APP" on display
-    shared.display.update_display({"status": "pairing_idle", "pin": pin})
-    logging.info("\n====================================")
-    logging.info("  OLED: PAIR IN APP")
-    logging.info(f"  APP PAIRING PIN: {pin}")
-    logging.info("====================================\n")
-
     shared.camera_client = CameraClient(shared, CAMERA_CONFIG)
+    shared.server = WebSocketServer(shared, host="0.0.0.0", port=8765)
 
-    # Listen on all interfaces so the phone can connect
-    bind_host = "0.0.0.0"
-    
-    # Start BLE in the background to listen for the phone ping
-    run_ble_pairing_background(shared)
+    # Give the server thread a brief moment to bind and expose startup errors early.
+    for _ in range(30):
+        if shared.server.is_listening:
+            break
+        if shared.server.startup_error is not None:
+            raise RuntimeError(f"WebSocket server failed to start: {shared.server.startup_error}")
+        time.sleep(0.1)
 
-    shared.server = Server(shared, host=bind_host, port=12345, defer_listen=True)
-    shared.server.start_listen()
+    if not shared.server.is_listening:
+        logging.warning("WebSocket server did not report listening state yet; continuing")
 
-    # Wait for the phone to connect before starting the apps
-    logging.info("Waiting for phone to connect to TCP socket...")
-    
+    logging.info("Waiting for phone to connect via WebSocket...")
+    while not shared.server.connected:
+        if shared.server.startup_error is not None:
+            raise RuntimeError(f"WebSocket server stopped: {shared.server.startup_error}")
+        time.sleep(0.5)
+
+    logging.info("Phone connected! Starting Translation App...")
+    shared.display.reset_display()
+
     # App callback button: GPIO 4 (pin 7)
     shared.button = GoggleButton(
         shared_class=shared, pin=4, button_callback=None
@@ -66,15 +56,6 @@ def main() -> None:
         shared_class=shared, pin=23, button_callback=cycle_callback
     )
 
-    while shared.server._client_socket is None:
-        time.sleep(0.5)
-        
-    logging.info("Phone connected! Starting Translation App...")
-
-    # Clear the pairing status so apps can use the display
-    shared.display.reset_display()
-    
-    # 4. Start the app (this assigns the correct button callbacks for the app)
     start_app("translation", shared, shared.button, shared.server)
 
     try:

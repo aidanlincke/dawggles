@@ -18,10 +18,11 @@ rpi_ws281x==5.0.0
 sysv_ipc==1.2.0
 typing_extensions==4.15.0
 
-# --- Dawggles (camera, button, TCP, JPEG) ---
+# --- Dawggles (camera, button, WebSocket, JPEG) ---
 Pillow>=10.0.0
 gpiozero>=2.0
 picamera2>=0.3.12
+websockets>=12.0
 
 # --- BLE peripheral (pairing) — may need BlueZ / dbus permissions ---
 bless>=0.2.6

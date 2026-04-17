@@ -103,12 +103,20 @@ final class DawgglesAccessorySetup: ObservableObject {
                     let ns = error as NSError
                     if ns.domain == NEHotspotConfigurationErrorDomain,
                        ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue {
-                        self.status = "Already joined \(Self.hotspotSSID) Wi-Fi"
+                        self.status = "Accessory Wi-Fi is connected. Opening WebSocket…"
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            DawgglesConnection.shared.connectWebSocket()
+                        }
                     } else {
                         self.status = "Hotspot join failed: \(error.localizedDescription)"
                     }
                 } else {
-                    self.status = "Joined \(Self.hotspotSSID) Wi-Fi"
+                    self.status = "Joined \(Self.hotspotSSID). Opening WebSocket…"
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        DawgglesConnection.shared.connectWebSocket()
+                    }
                 }
             }
         }
@@ -123,6 +131,10 @@ final class DawgglesAccessorySetup: ObservableObject {
             if pendingPickerAfterActivation {
                 pendingPickerAfterActivation = false
                 presentPicker()
+            } else if let accessory = session?.accessories.first(where: {
+                $0.displayName.localizedCaseInsensitiveContains("Dawggles")
+            }) ?? session?.accessories.first {
+                joinHotspot(accessory: accessory)
             }
         case .accessoryAdded:
             guard let accessory = event.accessory else { break }

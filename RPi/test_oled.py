@@ -1,10 +1,3 @@
-# Data - green - pin 19
-# Clk - yellow - pin 23
-# DC - orange - pin 13
-# CS - red - pin 11
-# Vin - brown - pin 1
-# GND - black - pin 6
-
 import board
 import busio
 import digitalio

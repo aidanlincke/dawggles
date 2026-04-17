@@ -1,11 +1,12 @@
+import asyncio
 import base64
 import io
 import json
 import logging
-import socket
-import struct
 import queue
 from threading import Event, Lock, Thread, Timer
+
+import websockets
 
 from gpiozero import Button as GPIOButton
 from picamera2 import Picamera2
@@ -29,7 +30,6 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-# Max JSON payload per framed message (bytes after length prefix).
 MAX_JSON_MESSAGE_BYTES = 32 * 1024 * 1024
 
 # -- Goggle Shared Class --
@@ -49,95 +49,88 @@ class SharedClass:
     self.paired_tcp_host = None  # str | None — Pi LAN IP to bind (never 0.0.0.0 in production)
     self.tcp_bind_ready = Event()
 
-# -- Server Class --
-class Server:
+# -- WebSocket Server Class --
+class WebSocketServer:
     """
-    TCP server: one persistent phone connection at a time, full duplex.
-
-    Wire format (both directions): 4-byte big-endian length + UTF-8 JSON bytes.
-    The phone must use the same framing when sending; use send_json() when pushing from the Pi.
+    WebSocket server: one persistent client connection at a time, full duplex.
+    Runs an asyncio event loop in a daemon thread; all other code stays threaded.
+    Message format: UTF-8 JSON text frames (same schema as before).
     """
 
-    def __init__(
-        self,
-        shared_class,
-        host="127.0.0.1",
-        port=12345,
-        message_handler=None,
-        defer_listen=False,
-    ):
+    def __init__(self, shared_class, host="0.0.0.0", port=8765, message_handler=None):
         self.shared_class = shared_class
-        self.host = host
-        self.port = port
-        self.message_handler = message_handler  # (dict) -> None
-        self._client_socket = None
-        self._client_lock = Lock()
-        self._send_lock = Lock()
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(1)
-        
-        # Message queue for non-blocking TCP receive
+        self.message_handler = message_handler
+        self._ws = None          # current websocket connection
+        self._loop = asyncio.new_event_loop()
         self.message_queue = queue.Queue()
-        self.worker_thread = Thread(target=self._worker_loop, daemon=True)
-        self.worker_thread.start()
+        self._listening_event = Event()
+        self._startup_error = None
 
-        self.thread = None
-        if not defer_listen:
-            self.start_listen()
+        self._worker_thread = Thread(target=self._worker_loop, daemon=True)
+        self._worker_thread.start()
 
-    def start_listen(self):
-        if self.thread is not None:
-            return
-        self.thread = Thread(target=self._listen_loop, daemon=True)
-        self.thread.start()
+        t = Thread(target=self._run_loop, args=(host, port), daemon=True)
+        t.start()
 
-    @staticmethod
-    def _recv_exact(sock, n):
-        buf = bytearray()
-        while len(buf) < n:
-            chunk = sock.recv(n - len(buf))
-            if not chunk:
-                raise ConnectionError("connection closed while reading")
-            buf += chunk
-        return bytes(buf)
+    @property
+    def connected(self):
+        return self._ws is not None
 
-    def _replace_client(self, new_sock):
-        with self._client_lock:
-            old = self._client_socket
-            self._client_socket = new_sock
-        if old is not None:
-            try:
-                old.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                old.close()
-            except OSError:
-                pass
+    @property
+    def is_listening(self):
+        return self._listening_event.is_set()
 
-    def _clear_client_if(self, sock):
-        with self._client_lock:
-            if self._client_socket is sock:
-                self._client_socket = None
+    @property
+    def startup_error(self):
+        return self._startup_error
+
+    def _run_loop(self, host, port):
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_until_complete(self._serve(host, port))
+        except Exception as e:
+            self._startup_error = e
+            log.exception("websocket server failed to start: %s", e)
+
+    async def _serve(self, host, port):
+        async with websockets.serve(self._handler, host, port, max_size=MAX_JSON_MESSAGE_BYTES):
+            self._listening_event.set()
+            log.info("websocket server listening on %s:%s", host, port)
+            await asyncio.Future()  # run forever
+
+    async def _handler(self, ws):
+        self._ws = ws
+        log.info("websocket client connected: %s", ws.remote_address)
+        try:
+            async for raw in ws:
+                try:
+                    obj = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(obj, dict):
+                    self.message_queue.put(obj)
+        except websockets.ConnectionClosed:
+            pass
+        finally:
+            if self._ws is ws:
+                self._ws = None
+            log.info("websocket client disconnected")
 
     def send_json(self, obj):
-        """Send one framed JSON message to the connected phone (thread-safe). Returns False if no client."""
-        body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
-        if len(body) > MAX_JSON_MESSAGE_BYTES:
+        """Send a JSON message to the connected client (thread-safe). Returns False if no client."""
+        ws = self._ws
+        if ws is None:
+            return False
+        body = json.dumps(obj, separators=(",", ":"))
+        if len(body.encode()) > MAX_JSON_MESSAGE_BYTES:
             raise ValueError("JSON message exceeds MAX_JSON_MESSAGE_BYTES")
-        frame = struct.pack("!I", len(body)) + body
-        with self._send_lock:
-            sock = self._client_socket
-            if sock is None:
-                return False
-            try:
-                sock.sendall(frame)
-                return True
-            except OSError as e:
-                log.warning("send_json: %s", e)
-                return False
+        future = asyncio.run_coroutine_threadsafe(ws.send(body), self._loop)
+        try:
+            future.result(timeout=5)
+            return True
+        except Exception as e:
+            log.warning("send_json: %s", e)
+            return False
 
     def _worker_loop(self):
         while True:
@@ -151,47 +144,6 @@ class Server:
                 self.message_queue.task_done()
             except Exception as e:
                 log.warning("worker_loop error: %s", e)
-
-    def _client_loop(self, client_socket, addr):
-        sc = self.shared_class
-        try:
-            while True:
-                header = self._recv_exact(client_socket, 4)
-                (length,) = struct.unpack("!I", header)
-                if length == 0 or length > MAX_JSON_MESSAGE_BYTES:
-                    break
-                raw = self._recv_exact(client_socket, length)
-                try:
-                    message = json.loads(raw.decode("utf-8"))
-                except json.JSONDecodeError:
-                    break
-                if not isinstance(message, dict):
-                    break
-                
-                # Push to worker thread so network loop isn't blocked
-                self.message_queue.put(message)
-        except (ConnectionError, OSError):
-            pass
-        finally:
-            self._clear_client_if(client_socket)
-            try:
-                client_socket.close()
-            except OSError:
-                pass
-
-    def _listen_loop(self):
-        while True:
-            try:
-                client_socket, addr = self.server_socket.accept()
-                log.info("tcp client %s", addr)
-                self._replace_client(client_socket)
-                Thread(
-                    target=self._client_loop,
-                    args=(client_socket, addr),
-                    daemon=True,
-                ).start()
-            except Exception as e:
-                log.warning("server accept: %s", e)
 
 # -- Camera Client Class --
 class CameraClient:
@@ -403,9 +355,6 @@ class Display:
         """Renders the actual display state based on display_data."""
         if self.display_data.get("status") == "pairing_idle":
             self._render_text("PAIR IN APP")
-        elif self.display_data.get("status") == "pairing_pin":
-            pin = self.display_data.get("pin", "")
-            self._render_text(["ENTER PIN:", "", f"{pin}"])
         elif self.display_data.get("app"):
             import app_manager
             app_inst = app_manager.get_current_app()
