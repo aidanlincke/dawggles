@@ -61,20 +61,20 @@ final class DawgglesAccessorySetup: ObservableObject {
         }
     }
 
-    /// Hard-resets the connection: leaves the Dawggles AP, drops the WebSocket, and removes the BLE bond.
+    /// Presents the system removal confirmation. Only disconnects and leaves the AP if the user confirms.
     func unpairFromPhone() {
         guard isSessionReady, let session else { return }
         guard let accessory = session.accessories.first(where: {
             $0.displayName.localizedCaseInsensitiveContains("Dawggles")
         }) ?? session.accessories.first else { return }
 
-        // Kill the live connection and leave the AP immediately — don't wait for removeAccessory.
-        DawgglesConnection.shared.disconnect()
-        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
-
-        // Remove the ASK bond; the accessoryRemoved event clears pairedAccessory and status,
-        // which transitions the UI back to PairingView.
-        session.removeAccessory(accessory) { _ in }
+        session.removeAccessory(accessory) { error in
+            guard error == nil else { return }
+            // User confirmed — now do the hard reset.
+            // The accessoryRemoved event will fire separately and clear pairedAccessory.
+            DawgglesConnection.shared.disconnect()
+            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
+        }
     }
 
     // MARK: - Hotspot
@@ -108,11 +108,10 @@ final class DawgglesAccessorySetup: ObservableObject {
         }
     }
 
-    /// Leaves and re-joins the hotspot, then reconnects the WebSocket.
+    /// Drops the WebSocket and re-joins the hotspot, then reconnects.
     func reconnect() {
         guard let accessory = pairedAccessory else { return }
         DawgglesConnection.shared.disconnect()
-        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
         joinHotspot(accessory: accessory)
     }
 

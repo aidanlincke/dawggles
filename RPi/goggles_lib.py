@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import queue
+import time
 from threading import Event, Lock, Thread, Timer
 
 import websockets
@@ -303,9 +304,12 @@ class GoggleButton:
 # -- Display Class --
 class Display:
     def __init__(self, shared_class):
-        self.display_data = {}  # Store current display state
+        self.shared_class = shared_class
+        self.display_data = {}
         self.display_lock = Lock()
         self.temp_message_timer = None
+        self._last_connected = None
+        Thread(target=self._status_poll_loop, daemon=True).start()
         
         if not OLED_AVAILABLE:
             log.warning("OLED libraries (board, busio) not found. Display will print to terminal instead.")
@@ -329,28 +333,59 @@ class Display:
             log.warning(f"OLED init failed, continuing without display: {e}")
             self.hardware_available = False
     
+    def _status_poll_loop(self):
+        """Refresh the connection indicator whenever the WebSocket state changes."""
+        while True:
+            time.sleep(1)
+            if not self.hardware_available or self.shared_class.server is None:
+                continue
+            connected = self.shared_class.server.connected
+            if connected == self._last_connected:
+                continue
+            self._last_connected = connected
+            with self.display_lock:
+                # Clear the indicator bounding box, redraw, and push to display
+                self.oled.fill_rect(119, 0, 9, 8, 0)
+                self._draw_status_bar()
+                self.oled.show()
+
+    def _draw_status_bar(self):
+        """Small connection indicator in the top-right corner. No-op during pairing."""
+        if not self.hardware_available or self.shared_class.server is None:
+            return
+        connected = self.shared_class.server.connected
+        # 3 signal bars, bottom-aligned, rightmost corner (x=119..126, y=1..7)
+        # bar heights: 3px, 5px, 7px with 1px gaps
+        bx = [119, 122, 125]
+        bh = [3, 5, 7]
+        base_y = 7
+        if connected:
+            for x, h in zip(bx, bh):
+                self.oled.fill_rect(x, base_y - h + 1, 2, h, 1)
+        else:
+            # × in the same bounding box (119,1)–(126,7)
+            self.oled.line(119, 1, 126, 7, 1)
+            self.oled.line(126, 1, 119, 7, 1)
+
     def _render_text(self, lines: list, color: int = 1):
         if not self.hardware_available:
             return
         try:
-            # Change directory to where font5x8.bin is expected (Adafruit expects it in the CWD or lib)
-            # If adafruit_framebuf can't find it, we just pass the raw text if possible, but
-            # the safest way is to wrap just the show/fill.
             self.oled.fill(0)
-            
-            # Support both a single string or a list of strings
+
             if isinstance(lines, str):
                 lines = [lines]
-                
+
             total_height = len(lines) * 10 # 8px font + 2px padding
             start_y = max(0, (self.oled.height - total_height) // 2)
-            
+
             for i, line in enumerate(lines):
                 tw = len(line) * 8
                 tx = max(0, (self.oled.width - tw) // 2)
                 ty = start_y + (i * 10)
                 self.oled.text(line, tx, ty, color)
-                
+
+            self._draw_status_bar()
             self.oled.show()
         except OSError as e:
             if "No such file or directory: 'font5x8.bin'" in str(e):
@@ -388,6 +423,7 @@ class Display:
                 # Default app state is a blank screen so you can see through the goggles
                 if self.hardware_available:
                     self.oled.fill(0)
+                    self._draw_status_bar()
                     self.oled.show()
 
     def show_pairing_waiting(self):

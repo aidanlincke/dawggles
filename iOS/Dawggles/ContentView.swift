@@ -107,30 +107,26 @@ private struct PairedView: View {
                     .font(.title2)
                     .bold()
                 Spacer()
-                // Connection status pill
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(connection.isConnected ? Color.green : Color.red)
-                        .frame(width: 8, height: 8)
-                    Text(connection.isConnected ? "Connected" : "Disconnected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                // Connection pill
+                Image(systemName: connection.isConnected ? "wifi" : "wifi.slash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(connection.isConnected ? Color.green : Color.red)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(connection.isConnected
+                        ? Color.green.opacity(0.12)
+                        : Color.red.opacity(0.12)))
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(.easeInOut(duration: 0.25), value: connection.isConnected)
                 // Refresh button
                 Button {
                     isRefreshing = true
                     accessorySetup.reconnect()
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isRefreshing ? 360 : 0))
-                        .animation(
-                            isRefreshing
-                                ? .linear(duration: 0.7).repeatForever(autoreverses: false)
-                                : .default,
-                            value: isRefreshing
-                        )
+                        .symbolEffect(.rotate, options: .repeating, isActive: isRefreshing)
                 }
                 .disabled(isRefreshing)
             }

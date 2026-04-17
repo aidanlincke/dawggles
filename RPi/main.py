@@ -50,13 +50,6 @@ def main() -> None:
     if not shared.server.is_listening:
         logging.warning("WebSocket server did not report listening state yet; continuing")
 
-    logging.info("Waiting for phone to connect via WebSocket...")
-    while not shared.server.connected:
-        if shared.server.startup_error is not None:
-            raise RuntimeError(f"WebSocket server stopped: {shared.server.startup_error}")
-        time.sleep(0.5)
-
-    logging.info("Phone connected! Starting Translation App...")
     shared.display.reset_display()
 
     # Cycle apps button: GPIO 23 (pin 16)
