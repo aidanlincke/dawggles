@@ -61,32 +61,20 @@ final class DawgglesAccessorySetup: ObservableObject {
         }
     }
 
-    /// Removes the iOS BLE bond for the accessory managed through this app (still run `unpair.py` on the Pi).
+    /// Hard-resets the connection: leaves the Dawggles AP, drops the WebSocket, and removes the BLE bond.
     func unpairFromPhone() {
-        ensureSessionActivated()
-        guard let session = session else { return }
-        guard isSessionReady else {
-            status = "Setting up Bluetooth… try Unpair again in a moment."
-            return
-        }
-        let match = session.accessories.first { accessory in
-            accessory.displayName.localizedCaseInsensitiveContains("Dawggles")
-        }
-        guard let accessory = match ?? session.accessories.first else {
-            status = "No accessory registered for this app. Tap Pair Dawggles first."
-            return
-        }
-        status = "Removing accessory…"
-        session.removeAccessory(accessory) { [weak self] error in
-            Task { @MainActor in
-                guard let self else { return }
-                if let error {
-                    self.status = "Unpair failed: \(error.localizedDescription)"
-                } else {
-                    self.status = "Removed from this iPhone. Run unpair.py on the Pi to clear the Pi side."
-                }
-            }
-        }
+        guard isSessionReady, let session else { return }
+        guard let accessory = session.accessories.first(where: {
+            $0.displayName.localizedCaseInsensitiveContains("Dawggles")
+        }) ?? session.accessories.first else { return }
+
+        // Kill the live connection and leave the AP immediately — don't wait for removeAccessory.
+        DawgglesConnection.shared.disconnect()
+        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
+
+        // Remove the ASK bond; the accessoryRemoved event clears pairedAccessory and status,
+        // which transitions the UI back to PairingView.
+        session.removeAccessory(accessory) { _ in }
     }
 
     // MARK: - Hotspot
@@ -101,20 +89,16 @@ final class DawgglesAccessorySetup: ObservableObject {
                                                                   passphrase: Self.hotspotPassword) { [weak self] error in
             Task { @MainActor in
                 guard let self else { return }
+                let shouldConnect: Bool
                 if let error {
                     let ns = error as NSError
-                    if ns.domain == NEHotspotConfigurationErrorDomain,
-                       ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue {
-                        self.status = "Accessory Wi-Fi is connected. Opening WebSocket…"
-                        Task {
-                            try? await Task.sleep(nanoseconds: 1_000_000_000)
-                            DawgglesConnection.shared.connectWebSocket()
-                        }
-                    } else {
-                        self.status = "Hotspot join failed: \(error.localizedDescription)"
-                    }
+                    // alreadyAssociated just means we're already on the hotspot — still connect
+                    shouldConnect = ns.domain == NEHotspotConfigurationErrorDomain
+                        && ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue
                 } else {
-                    self.status = "Joined \(Self.hotspotSSID). Opening WebSocket…"
+                    shouldConnect = true
+                }
+                if shouldConnect {
                     Task {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         DawgglesConnection.shared.connectWebSocket()
@@ -122,6 +106,14 @@ final class DawgglesAccessorySetup: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Leaves and re-joins the hotspot, then reconnects the WebSocket.
+    func reconnect() {
+        guard let accessory = pairedAccessory else { return }
+        DawgglesConnection.shared.disconnect()
+        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
+        joinHotspot(accessory: accessory)
     }
 
     // MARK: - Private
@@ -143,8 +135,6 @@ final class DawgglesAccessorySetup: ObservableObject {
             guard let accessory = event.accessory else { break }
             isPairing = false
             pairedAccessory = accessory
-            let name = accessory.displayName
-            status = "Added \(name). Joining hotspot…"
             joinHotspot(accessory: accessory)
         case .accessoryChanged:
             break

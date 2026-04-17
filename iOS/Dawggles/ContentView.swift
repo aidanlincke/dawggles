@@ -93,6 +93,8 @@ private struct PairedView: View {
     @EnvironmentObject private var connection: DawgglesConnection
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
 
+    @State private var isRefreshing = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
 
@@ -105,7 +107,7 @@ private struct PairedView: View {
                     .font(.title2)
                     .bold()
                 Spacer()
-                // Connection pill
+                // Connection status pill
                 HStack(spacing: 6) {
                     Circle()
                         .fill(connection.isConnected ? Color.green : Color.red)
@@ -114,34 +116,39 @@ private struct PairedView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                // Refresh button
+                Button {
+                    isRefreshing = true
+                    accessorySetup.reconnect()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isRefreshing ? 360 : 0))
+                        .animation(
+                            isRefreshing
+                                ? .linear(duration: 0.7).repeatForever(autoreverses: false)
+                                : .default,
+                            value: isRefreshing
+                        )
+                }
+                .disabled(isRefreshing)
             }
             .padding(.horizontal, 24)
             .padding(.top, 20)
             .padding(.bottom, 24)
+            .onChange(of: connection.isConnected) { _, connected in
+                if connected { isRefreshing = false }
+            }
+            .onChange(of: connection.isConnecting) { _, connecting in
+                // Stop the spinner if all retry attempts are exhausted
+                if !connecting && !connection.isConnected { isRefreshing = false }
+            }
 
             Divider()
 
             ScrollView {
                 VStack(spacing: 24) {
-
-                    // WebSocket
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("WebSocket")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Button {
-                            connection.connectWebSocket()
-                        } label: {
-                            Text(connection.isConnected ? "Reconnect" : "Connect")
-                                .bold()
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(connection.isConnected)
-                    }
-
                     // Received image
                     if let image = connection.receivedImage {
                         VStack(alignment: .leading, spacing: 8) {
@@ -153,15 +160,6 @@ private struct PairedView: View {
                                 .scaledToFit()
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
-                    }
-
-                    // Accessory status
-                    if !accessorySetup.status.isEmpty {
-                        Text(accessorySetup.status)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .padding(24)

@@ -75,6 +75,8 @@ def main() -> None:
         while True:
             pass
     except KeyboardInterrupt:
+        if shared.display:
+            shared.display.reset_display()
         if shared.camera_client:
             shared.camera_client.stop_capture_loop()
             if shared.camera_client.camera:

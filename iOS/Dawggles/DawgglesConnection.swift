@@ -15,7 +15,7 @@ class DawgglesConnection: ObservableObject {
     private var retryAttempt = 0
     private var hostCandidates: [String] = []
     private var hostIndex = 0
-    private var isConnecting = false
+    @Published private(set) var isConnecting = false
     private var hasScheduledRetryForCurrentConnection = false
 
     private let websocketPort: NWEndpoint.Port = 8765
