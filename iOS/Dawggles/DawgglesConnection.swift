@@ -4,11 +4,15 @@ import Network
 import UIKit
 import Darwin
 
+/// WebSocket client to the Pi: still images (JSON), live JPEGs (binary), OCR/groupings back, active line index.
 class DawgglesConnection: ObservableObject {
     static let shared = DawgglesConnection()
 
     @Published var isConnected: Bool = false
     @Published var receivedImage: UIImage? = nil
+    @Published private(set) var previewImage: UIImage? = nil
+
+    weak var liveAlignment: LiveAlignmentSession?
 
     private var connection: NWConnection?
     private var reconnectWorkItem: DispatchWorkItem?
@@ -22,7 +26,29 @@ class DawgglesConnection: ObservableObject {
     private let defaultHost = "10.42.0.1"
     private let maxRetryAttempts = 8
 
+    private var lastPreviewWall: CFAbsoluteTime = 0
+    private let previewMinInterval: TimeInterval = 1.0 / 15.0
+
+    // MARK: Live stream + alignment (Pi binary JPEGs)
+
+    /// After OCR we may wait for the first live frame before starting `LiveAlignmentSession`.
+    private var alignmentPayloadWaitingForFirstLiveFrame: (reference: UIImage, groupings: [[String: Any]])?
+    /// Pi sent `preview_stopped` or we disconnected — don't arm alignment when OCR completes late.
+    private var suppressAlignmentArmUntilNextStill = false
+
     private init() {}
+
+    private func tearDownLiveAlignmentAndPreview() {
+        alignmentPayloadWaitingForFirstLiveFrame = nil
+        previewImage = nil
+        liveAlignment?.disarm()
+    }
+
+    /// Pi ended the JPEG stream (or equivalent): stop alignment and clear live UI state.
+    private func handlePiLiveStreamEnded() {
+        suppressAlignmentArmUntilNextStill = true
+        tearDownLiveAlignmentAndPreview()
+    }
 
     // MARK: - WebSocket
 
@@ -66,7 +92,6 @@ class DawgglesConnection: ObservableObject {
         connection?.cancel()
         hasScheduledRetryForCurrentConnection = false
 
-        // NWConnection avoids URLSession proxying behavior for local WebSocket traffic.
         let params = NWParameters.tcp
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
@@ -87,7 +112,7 @@ class DawgglesConnection: ObservableObject {
                 case .preparing:
                     print("DawgglesConnection: preparing")
                 case .ready:
-                    print("DawgglesConnection: ready ✓")
+                    print("DawgglesConnection: ready")
                     self.isConnected = true
                     self.retryAttempt = 0
                     self.isConnecting = false
@@ -160,7 +185,6 @@ class DawgglesConnection: ObservableObject {
         retryAttempt += 1
         reconnectWorkItem?.cancel()
 
-        // Alternate candidate hosts in case AP subnet isn't 10.42.0.0/24.
         if hostCandidates.count > 1 {
             hostIndex = (hostIndex + 1) % hostCandidates.count
         }
@@ -248,15 +272,38 @@ class DawgglesConnection: ObservableObject {
     private func receiveMessage() {
         connection?.receiveMessage { [weak self] data, context, _, error in
             if error != nil {
-                DispatchQueue.main.async { self?.isConnected = false }
+                DispatchQueue.main.async {
+                    self?.isConnected = false
+                    self?.handlePiLiveStreamEnded()
+                }
                 return
             }
             if let data, !data.isEmpty,
                let meta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata {
                 switch meta.opcode {
-                case .text, .binary:
+                case .text:
                     if let text = String(data: data, encoding: .utf8) {
                         self?.handleJSON(text)
+                    }
+                case .binary:
+                    guard let self else { break }
+                    let now = CFAbsoluteTimeGetCurrent()
+                    if now - self.lastPreviewWall >= self.previewMinInterval,
+                       let image = UIImage(data: data) {
+                        self.lastPreviewWall = now
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self else { return }
+                            if let pending = self.alignmentPayloadWaitingForFirstLiveFrame {
+                                self.liveAlignment?.arm(
+                                    reference: pending.reference,
+                                    groupings: pending.groupings,
+                                    connection: self
+                                )
+                                self.alignmentPayloadWaitingForFirstLiveFrame = nil
+                            }
+                            self.previewImage = image
+                            self.liveAlignment?.onLiveFrame(image)
+                        }
                     }
                 default:
                     break
@@ -270,11 +317,46 @@ class DawgglesConnection: ObservableObject {
         guard let data = text.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
+        if obj["event"] as? String == "preview_stopped" {
+            DispatchQueue.main.async { self.handlePiLiveStreamEnded() }
+            return
+        }
+
         if obj["event"] as? String == "picture",
            let b64 = obj["image_b64"] as? String,
            let imageData = Data(base64Encoded: b64),
            let image = UIImage(data: imageData) {
-            DispatchQueue.main.async { self.receivedImage = image }
+            DispatchQueue.main.async {
+                self.receivedImage = image
+                self.suppressAlignmentArmUntilNextStill = false
+            }
+            let app = obj["app"] as? String ?? "translation"
+            if app == "translation" {
+                Task { await self.runOCRAndSendGroupingsToPi(image: image) }
+            }
+        }
+    }
+
+    private func runOCRAndSendGroupingsToPi(image: UIImage) async {
+        let groupings: [[String: Any]] = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let g = ImageTranslator.buildGroupings(from: image)
+                continuation.resume(returning: g)
+            }
+        }
+
+        let summary = groupings.compactMap { $0["translated_text"] as? String }.joined(separator: " ")
+
+        await MainActor.run {
+            self.liveAlignment?.disarm()
+            self.sendJSON([
+                "app": "translation",
+                "data": summary,
+                "groupings": groupings,
+            ])
+            if !self.suppressAlignmentArmUntilNextStill {
+                self.alignmentPayloadWaitingForFirstLiveFrame = (reference: image, groupings: groupings)
+            }
         }
     }
 
@@ -289,6 +371,15 @@ class DawgglesConnection: ObservableObject {
         conn.send(content: payload, contentContext: context, isComplete: true, completion: .idempotent)
     }
 
+    /// Tell the Pi which `groupings` row the user is looking at (center reticle), after alignment + hysteresis.
+    func sendActiveGroupingIndex(_ index: Int) {
+        sendJSON([
+            "app": "translation",
+            "event": "focus",
+            "active_idx": index,
+        ])
+    }
+
     // MARK: - Disconnect
 
     func disconnect() {
@@ -297,7 +388,10 @@ class DawgglesConnection: ObservableObject {
         connection = nil
         isConnecting = false
         hasScheduledRetryForCurrentConnection = false
-        DispatchQueue.main.async { self.isConnected = false }
+        DispatchQueue.main.async {
+            self.isConnected = false
+            self.handlePiLiveStreamEnded()
+        }
     }
 }
 

@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import queue
+import time
 from threading import Event, Lock, Thread, Timer
 
 import websockets
@@ -45,6 +46,11 @@ class SharedClass:
     self.shutter_event = Event()
     self.video_event = Event()
     self.display_lock = Lock()
+    # When True, ``CameraClient`` sends low-res JPEG frames to the phone over WebSocket (binary).
+    # Apps toggle this; do not confuse with ``video_event`` (used by ``video_loop``).
+    self.phone_live_stream = False
+    # Registered by ``app_manager`` so apps can reset state when the phone disconnects (no app imports here).
+    self.websocket_disconnect_callback = None
     # Set by pairing after BLE knock; main() waits before binding TCP.
     self.paired_tcp_host = None  # str | None — Pi LAN IP to bind (never 0.0.0.0 in production)
     self.tcp_bind_ready = Event()
@@ -54,7 +60,8 @@ class WebSocketServer:
     """
     WebSocket server: one persistent client connection at a time, full duplex.
     Runs an asyncio event loop in a daemon thread; all other code stays threaded.
-    Message format: UTF-8 JSON text frames (same schema as before).
+    Inbound: UTF-8 JSON text frames from the phone.
+    Outbound: JSON text frames plus optional binary frames (raw JPEG preview bytes).
     """
 
     def __init__(self, shared_class, host="0.0.0.0", port=8765, message_handler=None):
@@ -103,6 +110,10 @@ class WebSocketServer:
         log.info("websocket client connected: %s", ws.remote_address)
         try:
             async for raw in ws:
+                if isinstance(raw, (bytes, bytearray)):
+                    continue
+                if not isinstance(raw, str):
+                    continue
                 try:
                     obj = json.loads(raw)
                 except (json.JSONDecodeError, ValueError):
@@ -114,6 +125,13 @@ class WebSocketServer:
         finally:
             if self._ws is ws:
                 self._ws = None
+            self.shared_class.phone_live_stream = False
+            cb = self.shared_class.websocket_disconnect_callback
+            if cb:
+                try:
+                    cb()
+                except Exception as e:
+                    log.warning("websocket_disconnect_callback: %s", e)
             log.info("websocket client disconnected")
 
     def send_json(self, obj):
@@ -130,6 +148,19 @@ class WebSocketServer:
             return True
         except Exception as e:
             log.warning("send_json: %s", e)
+            return False
+
+    def send_binary(self, data: bytes):
+        """Send a binary frame (e.g. raw JPEG) to the connected client. Thread-safe."""
+        ws = self._ws
+        if ws is None:
+            return False
+        future = asyncio.run_coroutine_threadsafe(ws.send(data), self._loop)
+        try:
+            future.result(timeout=5)
+            return True
+        except Exception as e:
+            log.warning("send_binary: %s", e)
             return False
 
     def _worker_loop(self):
@@ -152,6 +183,10 @@ class CameraClient:
         self.camera = camera
         self.capture_thread = None
         self.running = False
+        self._capture_lock = Lock()
+        self._preview_thread = None
+        self._preview_running = False
+        self._has_lores_stream = False
         self.initialize_camera(config)
 
     def initialize_camera(self, config):
@@ -164,12 +199,24 @@ class CameraClient:
             from libcamera import Transform
             still_config = self.camera.create_still_configuration(
                 main=config,
+                lores={"size": (640, 360)},
                 transform=Transform(hflip=True, vflip=True),
             )
-            log.info("camera: applying 180-degree transform (hflip + vflip)")
+            self._has_lores_stream = True
+            log.info("camera: applying 180-degree transform (hflip + vflip), lores preview640x360")
         except Exception as e:
             log.warning("camera: could not apply 180-degree transform, using default orientation: %s", e)
-            still_config = self.camera.create_still_configuration(main=config)
+            try:
+                still_config = self.camera.create_still_configuration(
+                    main=config,
+                    lores={"size": (640, 360)},
+                )
+                self._has_lores_stream = True
+                log.info("camera: lores preview 640x360")
+            except Exception as e2:
+                log.warning("camera: no lores stream: %s", e2)
+                still_config = self.camera.create_still_configuration(main=config)
+                self._has_lores_stream = False
 
         self.camera.configure(still_config)
         self.camera.start()
@@ -196,6 +243,7 @@ class CameraClient:
 
     def stop_capture_loop(self):
         self.running = False
+        self._preview_running = False
         self.shared_class.shutter_event.set() # Wake up the thread so it can exit cleanly
         if self.capture_thread:
             self.capture_thread.join(timeout=1)
@@ -207,8 +255,9 @@ class CameraClient:
                 break
             try:
                 stream = io.BytesIO()
-                # Rely on hardware to encode JPEG at optimal size
-                self.camera.capture_file(stream, format='jpeg')
+                with self._capture_lock:
+                    # Rely on hardware to encode JPEG at optimal size
+                    self.camera.capture_file(stream, format='jpeg')
                 self.shared_class.data['picture'] = stream.getvalue()
                 self.send_captured_jpeg_to_client()
                 
@@ -263,7 +312,39 @@ class CameraClient:
                 pass
             self.send_video_to_client()
 
+    def ensure_preview_thread(self):
+        if self._preview_thread is not None and self._preview_thread.is_alive():
+            return
+        self._preview_running = True
+        self._preview_thread = Thread(target=self._preview_loop, daemon=True)
+        self._preview_thread.start()
+
+    def _preview_loop(self):
+        target_period = 1.0 / 12.0
+        while self._preview_running:
+            if not self.shared_class.phone_live_stream:
+                time.sleep(0.05)
+                continue
+            srv = self.shared_class.server
+            if srv is None or not srv.connected:
+                time.sleep(0.05)
+                continue
+            try:
+                stream = io.BytesIO()
+                with self._capture_lock:
+                    if self._has_lores_stream:
+                        self.camera.capture_file(stream, format="jpeg", name="lores")
+                    else:
+                        self.camera.capture_file(stream, format="jpeg")
+                jpeg = stream.getvalue()
+                if jpeg and not srv.send_binary(jpeg):
+                    log.debug("preview: send_binary skipped (no client)")
+            except Exception as e:
+                log.warning("preview: %s", e)
+            time.sleep(target_period)
+
     def send_video_to_client(self):
+        """Legacy hook — preview is driven by `_preview_loop` + ``SharedClass.phone_live_stream``."""
         pass
 
 # -- Goggle Button Class --

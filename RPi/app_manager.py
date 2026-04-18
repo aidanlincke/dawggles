@@ -51,6 +51,16 @@ def start_app(app_name, shared_class, button=None, server=None):
     if srv:
         srv.message_handler = _current_app_instance.on_message
 
+    def _on_websocket_disconnect():
+        app = get_current_app()
+        if app is not None:
+            try:
+                app.on_websocket_disconnect()
+            except Exception as e:
+                logging.warning("on_websocket_disconnect: %s", e)
+
+    shared_class.websocket_disconnect_callback = _on_websocket_disconnect
+
     _current_app_instance.on_mount()
 
 def switch_to_next_app(shared_class):

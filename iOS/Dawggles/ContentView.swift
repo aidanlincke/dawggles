@@ -93,6 +93,7 @@ private struct PairedView: View {
     @EnvironmentObject private var connection: DawgglesConnection
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
 
+    @StateObject private var liveAlignment = LiveAlignmentSession()
     @State private var isRefreshing = false
 
     var body: some View {
@@ -144,11 +145,34 @@ private struct PairedView: View {
                 // Stop the spinner if all retry attempts are exhausted
                 if !connecting && !connection.isConnected { isRefreshing = false }
             }
+            .onAppear {
+                connection.liveAlignment = liveAlignment
+            }
+            .onDisappear {
+                connection.liveAlignment = nil
+                liveAlignment.disarm()
+            }
 
             Divider()
 
             ScrollView {
                 VStack(spacing: 24) {
+                    if let live = connection.previewImage {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Live preview")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Image(uiImage: live)
+                                .resizable()
+                                .scaledToFit()
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            if let idx = liveAlignment.lastSentIndex {
+                                Text("Active ROI: \(idx)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
                     // Received image
                     if let image = connection.receivedImage {
                         VStack(alignment: .leading, spacing: 8) {

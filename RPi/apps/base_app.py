@@ -23,6 +23,10 @@ class BaseApp:
         """Called when the camera finishes capturing a picture."""
         pass
 
+    def on_websocket_disconnect(self):
+        """Called when the phone WebSocket disconnects (optional cleanup)."""
+        pass
+
     def render_display(self, display):
         """Called when the display needs to re-render for this app."""
         pass
