@@ -194,6 +194,12 @@ private struct PairedView: View {
                                 .resizable()
                                 .scaledToFit()
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                            if let translation = connection.receivedTranslation, !translation.isEmpty {
+                                Text(translation)
+                                    .font(.body)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }

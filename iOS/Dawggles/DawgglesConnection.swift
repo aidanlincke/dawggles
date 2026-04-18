@@ -9,6 +9,7 @@ class DawgglesConnection: ObservableObject {
 
     @Published var isConnected: Bool = false
     @Published var receivedImage: UIImage? = nil
+    @Published var receivedTranslation: String?
 
     private var connection: NWConnection?
     private var reconnectWorkItem: DispatchWorkItem?
@@ -274,7 +275,10 @@ class DawgglesConnection: ObservableObject {
            let b64 = obj["image_b64"] as? String,
            let imageData = Data(base64Encoded: b64),
            let image = UIImage(data: imageData) {
-            DispatchQueue.main.async { self.receivedImage = image }
+            DispatchQueue.main.async {
+                self.receivedImage = image
+                self.receivedTranslation = nil
+            }
             ImageTranslator.shared.processAndTranslate(image: image) { [weak self] blocks in
                 guard !blocks.isEmpty else { return }
                 let data = blocks.compactMap { $0.translatedText }.joined(separator: " / ")
@@ -287,6 +291,9 @@ class DawgglesConnection: ObservableObject {
                         "w": block.boundingBox.width,
                         "h": block.boundingBox.height,
                     ]
+                }
+                DispatchQueue.main.async {
+                    self?.receivedTranslation = data.isEmpty ? nil : data
                 }
                 self?.sendJSON(["app": "translation", "data": data, "groupings": groupings])
             }
@@ -312,7 +319,10 @@ class DawgglesConnection: ObservableObject {
         connection = nil
         isConnecting = false
         hasScheduledRetryForCurrentConnection = false
-        DispatchQueue.main.async { self.isConnected = false }
+        DispatchQueue.main.async {
+            self.isConnected = false
+            self.receivedTranslation = nil
+        }
     }
 }
 
