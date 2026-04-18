@@ -11,6 +11,7 @@ class DawgglesConnection: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var receivedImage: UIImage? = nil
     @Published private(set) var previewImage: UIImage? = nil
+    @Published var receivedTranslation: String?
 
     weak var liveAlignment: LiveAlignmentSession?
 
@@ -337,11 +338,20 @@ class DawgglesConnection: ObservableObject {
            let image = UIImage(data: imageData) {
             DispatchQueue.main.async {
                 self.receivedImage = image
+                self.receivedTranslation = nil
                 self.suppressAlignmentArmUntilNextStill = false
             }
             let app = obj["app"] as? String ?? "translation"
             if app == "translation" {
                 Task { await self.beginTranslationLiveSessionAfterStill() }
+                ImageTranslator.shared.processAndTranslate(image: image) { [weak self] blocks in
+                    guard let self else { return }
+                    guard !blocks.isEmpty else { return }
+                    let summary = blocks.compactMap { $0.translatedText }.joined(separator: " / ")
+                    DispatchQueue.main.async {
+                        self.receivedTranslation = summary.isEmpty ? nil : summary
+                    }
+                }
             }
         }
     }
@@ -396,6 +406,7 @@ class DawgglesConnection: ObservableObject {
         hasScheduledRetryForCurrentConnection = false
         DispatchQueue.main.async {
             self.isConnected = false
+            self.receivedTranslation = nil
             self.handlePiLiveStreamEnded()
         }
     }

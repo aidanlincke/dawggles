@@ -1,0 +1,15 @@
+[Unit]
+Description=Dawggles main service
+
+[Service]
+Type=simple
+User=dawggles
+Group=dawggles
+WorkingDirectory=/home/dawggles/dawggles/RPi
+ExecStart=/home/dawggles/dawggles/RPi/venv/bin/python /home/dawggles/dawggles/RPi/main.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

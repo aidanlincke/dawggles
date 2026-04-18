@@ -4,11 +4,13 @@
 //
 
 import SwiftUI
+import Translation
 
 // MARK: - Root
 
 struct ContentView: View {
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
+    @StateObject private var translator = ImageTranslator.shared
 
     private var showPairedDashboard: Bool {
         #if DEBUG
@@ -33,6 +35,69 @@ struct ContentView: View {
             }
             #endif
         }
+        .modifier(TranslationViewModifier(translator: translator))
+    }
+}
+
+// MARK: - Translation modifier
+
+private struct TranslationViewModifier: ViewModifier {
+    @ObservedObject var translator: ImageTranslator
+    @State private var configuration: TranslationSession.Configuration?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: translator.translationTrigger) {
+                if configuration == nil {
+                    configuration = TranslationSession.Configuration()
+                } else {
+                    configuration?.invalidate()
+                }
+            }
+            .onChange(of: translator.liveTranslationTrigger) {
+                if configuration == nil {
+                    configuration = TranslationSession.Configuration()
+                } else {
+                    configuration?.invalidate()
+                }
+            }
+            .translationTask(configuration) { session in
+                let blocks = translator.blocksToTranslate
+                if !blocks.isEmpty {
+                    var translated: [TranslationBlock] = []
+                    do {
+                        for block in blocks {
+                            let response = try await session.translate(block.text)
+                            var b = block
+                            b.translatedText = response.targetText
+                            translated.append(b)
+                        }
+                        translator.completeTranslation(translatedBlocks: translated)
+                    } catch {
+                        print("TranslationViewModifier: translation failed — \(error)")
+                        translator.completeTranslation(translatedBlocks: blocks)
+                    }
+                    return
+                }
+
+                let live = translator.liveGroupingsToTranslate
+                guard !live.isEmpty else { return }
+
+                var out: [[String: Any]] = []
+                do {
+                    for row in live {
+                        var m = row
+                        let src = (m["translated_text"] as? String) ?? ""
+                        let response = try await session.translate(src)
+                        m["translated_text"] = response.targetText
+                        out.append(m)
+                    }
+                    translator.completeLiveTranslation(translatedGroupings: out)
+                } catch {
+                    print("TranslationViewModifier: live translation failed — \(error)")
+                    translator.completeLiveTranslation(translatedGroupings: live)
+                }
+            }
     }
 }
 
@@ -120,30 +185,26 @@ private struct PairedView: View {
                     .font(.title2)
                     .bold()
                 Spacer()
-                // Connection status pill
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(connection.isConnected ? Color.green : Color.red)
-                        .frame(width: 8, height: 8)
-                    Text(connection.isConnected ? "Connected" : "Disconnected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                // Connection pill
+                Image(systemName: connection.isConnected ? "wifi" : "wifi.slash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(connection.isConnected ? Color.green : Color.red)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(connection.isConnected
+                        ? Color.green.opacity(0.12)
+                        : Color.red.opacity(0.12)))
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(.easeInOut(duration: 0.25), value: connection.isConnected)
                 // Refresh button
                 Button {
                     isRefreshing = true
                     accessorySetup.reconnect()
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isRefreshing ? 360 : 0))
-                        .animation(
-                            isRefreshing
-                                ? .linear(duration: 0.7).repeatForever(autoreverses: false)
-                                : .default,
-                            value: isRefreshing
-                        )
+                        .symbolEffect(.rotate, options: .repeating, isActive: isRefreshing)
                 }
                 .disabled(isRefreshing)
             }
@@ -203,6 +264,12 @@ private struct PairedView: View {
                                 .resizable()
                                 .scaledToFit()
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                            if let translation = connection.receivedTranslation, !translation.isEmpty {
+                                Text(translation)
+                                    .font(.body)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }

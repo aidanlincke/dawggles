@@ -59,6 +59,9 @@ final class LiveAlignmentSession: ObservableObject {
     /// Last snapshot actually sent to the Pi (for focus-only updates).
     private var lastPiFingerprint: String?
     private var lastPiActive: Int?
+    /// Last **translated** groupings sent to the Pi (used for ROI label when only `focus` is sent).
+    private var lastTranslatedGroupings: [[String: Any]]?
+    private var liveTranslateSeq: Int = 0
 
     func disarm() {
         tick?.cancel()
@@ -75,6 +78,8 @@ final class LiveAlignmentSession: ObservableObject {
         committedGroupings = nil
         lastPiFingerprint = nil
         lastPiActive = nil
+        lastTranslatedGroupings = nil
+        liveTranslateSeq = 0
     }
 
     /// Start live translation: OCR runs on preview frames only; requires Pi JPEG stream on `connection`.
@@ -106,7 +111,7 @@ final class LiveAlignmentSession: ObservableObject {
         ocrSeq += 1
         let seq = ocrSeq
         DispatchQueue.global(qos: .userInitiated).async {
-            let g = ImageTranslator.buildGroupings(from: image)
+            let g = LiveOCRGroupings.buildGroupings(from: image)
             DispatchQueue.main.async { [weak self] in
                 guard let self, seq == self.ocrSeq else { return }
                 self.handleLiveOCR(groupings: g, connection: conn)
@@ -131,7 +136,7 @@ final class LiveAlignmentSession: ObservableObject {
         let parsed = merged.enumerated().compactMap { i, d in TranslationGrouping(dictionary: d, arrayIndex: i) }
         guard !parsed.isEmpty else { return }
 
-        let nearest = ImageTranslator.indexOfGroupingNearestNormalizedCenter(merged)
+        let nearest = LiveOCRGroupings.indexOfGroupingNearestNormalizedCenter(merged)
         let clampedNearest = min(max(0, nearest), merged.count - 1)
 
         if lastCommittedIndex == nil {
@@ -155,23 +160,39 @@ final class LiveAlignmentSession: ObservableObject {
         if fingerprint == lastPiFingerprint, safeActive != lastPiActive {
             conn.sendActiveGroupingIndex(safeActive)
             lastPiActive = safeActive
-        } else {
-            let summary = merged.compactMap { $0["translated_text"] as? String }.joined(separator: " ")
-            conn.sendTranslationPayload(data: summary, groupings: merged, activeIdx: safeActive)
-            lastPiFingerprint = fingerprint
-            lastPiActive = safeActive
+            lastSentIndex = safeActive
+            let label: String
+            if let lg = lastTranslatedGroupings, safeActive >= 0, safeActive < lg.count {
+                label = (lg[safeActive]["translated_text"] as? String) ?? ""
+            } else {
+                label = (merged[safeActive]["translated_text"] as? String) ?? ""
+            }
+            lastSentROIText = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : label
+            return
         }
 
-        let idxChanged = lastSentIndex != safeActive
-        lastSentIndex = safeActive
-        let label = (merged[safeActive]["translated_text"] as? String) ?? ""
-        lastSentROIText = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : label
+        liveTranslateSeq += 1
+        let seq = liveTranslateSeq
+        ImageTranslator.shared.enqueueLiveGroupings(merged) { [weak self] translatedOut in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard seq == self.liveTranslateSeq else { return }
+                guard let conn = self.connection, conn.isConnected else { return }
 
-        if idxChanged {
-            if let t = lastSentROIText, !t.isEmpty {
-                print("LiveAlignment: ROI \(safeActive) (nearest-center) — \(t)")
-            } else {
-                print("LiveAlignment: ROI \(safeActive) (nearest-center) — (no text)")
+                let summary = translatedOut.compactMap { $0["translated_text"] as? String }.joined(separator: " ")
+                conn.sendTranslationPayload(data: summary, groupings: translatedOut, activeIdx: safeActive)
+                self.lastPiFingerprint = fingerprint
+                self.lastPiActive = safeActive
+                self.lastTranslatedGroupings = translatedOut
+                self.lastSentIndex = safeActive
+                let label = (translatedOut[safeActive]["translated_text"] as? String) ?? ""
+                self.lastSentROIText = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : label
+
+                if let t = self.lastSentROIText, !t.isEmpty {
+                    print("LiveAlignment: ROI \(safeActive) (nearest-center) — \(t)")
+                } else {
+                    print("LiveAlignment: ROI \(safeActive) (nearest-center) — (no text)")
+                }
             }
         }
     }

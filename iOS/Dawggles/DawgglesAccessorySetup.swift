@@ -61,20 +61,20 @@ final class DawgglesAccessorySetup: ObservableObject {
         }
     }
 
-    /// Hard-resets the connection: leaves the Dawggles AP, drops the WebSocket, and removes the BLE bond.
+    /// Presents the system removal confirmation. Only disconnects and leaves the AP if the user confirms.
     func unpairFromPhone() {
         guard isSessionReady, let session else { return }
         guard let accessory = session.accessories.first(where: {
             $0.displayName.localizedCaseInsensitiveContains("Dawggles")
         }) ?? session.accessories.first else { return }
 
-        // Kill the live connection and leave the AP immediately — don't wait for removeAccessory.
-        DawgglesConnection.shared.disconnect()
-        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
-
-        // Remove the ASK bond; the accessoryRemoved event clears pairedAccessory and status,
-        // which transitions the UI back to PairingView.
-        session.removeAccessory(accessory) { _ in }
+        session.removeAccessory(accessory) { error in
+            guard error == nil else { return }
+            // User confirmed — now do the hard reset.
+            // The accessoryRemoved event will fire separately and clear pairedAccessory.
+            DawgglesConnection.shared.disconnect()
+            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
+        }
     }
 
     // MARK: - Hotspot
@@ -86,33 +86,30 @@ final class DawgglesAccessorySetup: ObservableObject {
     /// descriptor to have had `ssid` set.
     func joinHotspot(accessory: ASAccessory) {
         NEHotspotConfigurationManager.shared.joinAccessoryHotspot(accessory,
-                                                                  passphrase: Self.hotspotPassword) { [weak self] error in
+                                                                  passphrase: Self.hotspotPassword) { error in
             Task { @MainActor in
-                guard let self else { return }
-                let shouldConnect: Bool
                 if let error {
                     let ns = error as NSError
-                    // alreadyAssociated just means we're already on the hotspot — still connect
-                    shouldConnect = ns.domain == NEHotspotConfigurationErrorDomain
+                    let isAlreadyAssociated = ns.domain == NEHotspotConfigurationErrorDomain
                         && ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue
-                } else {
-                    shouldConnect = true
-                }
-                if shouldConnect {
-                    Task {
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
-                        DawgglesConnection.shared.connectWebSocket()
+                    if !isAlreadyAssociated {
+                        print("DawgglesAccessorySetup: joinAccessoryHotspot: \(error.localizedDescription)")
                     }
+                }
+                // Always attempt connection — the WebSocket retry loop handles cases
+                // where DHCP hasn't finished yet or the join silently failed.
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    DawgglesConnection.shared.connectWebSocket()
                 }
             }
         }
     }
 
-    /// Leaves and re-joins the hotspot, then reconnects the WebSocket.
+    /// Drops the WebSocket and re-joins the hotspot, then reconnects.
     func reconnect() {
         guard let accessory = pairedAccessory else { return }
         DawgglesConnection.shared.disconnect()
-        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
         joinHotspot(accessory: accessory)
     }
 

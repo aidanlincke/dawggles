@@ -4,6 +4,8 @@ App Manager - switching between applications
 import logging
 from app_registry import APP_ORDER
 from apps.gps_app import GPSApp
+from apps.live_captions_app import LiveCaptionsApp
+from apps.settings_app import SettingsApp
 from apps.translation_app import TranslationApp
 
 _APPS = {}
@@ -13,6 +15,8 @@ def initialize_apps(shared_class):
     global _APPS
     _APPS["translation"] = TranslationApp(shared_class)
     _APPS["gps"] = GPSApp(shared_class)
+    _APPS["live_captions"] = LiveCaptionsApp(shared_class)
+    _APPS["settings"] = SettingsApp(shared_class)
     
     if tuple(_APPS.keys()) != APP_ORDER:
         raise RuntimeError("app_manager._APPS keys must match app_registry.APP_ORDER")
@@ -37,10 +41,8 @@ def start_app(app_name, shared_class, button=None, server=None):
     
     logging.info(f"--- Switched to APP: {app_name.upper()} ---")
     
-    # We clear the display when switching apps
     if shared_class.display:
         shared_class.display.reset_display()
-        shared_class.display.show_temporary_message(app_name.upper(), 2.0)
 
     # Update hardware callbacks if they exist
     btn = button or shared_class.button
@@ -62,6 +64,13 @@ def start_app(app_name, shared_class, button=None, server=None):
     shared_class.websocket_disconnect_callback = _on_websocket_disconnect
 
     _current_app_instance.on_mount()
+
+def clear_current_app():
+    """Unmount current app and return to no-app state (e.g. home screen)."""
+    global _current_app_instance
+    if _current_app_instance:
+        _current_app_instance.on_unmount()
+    _current_app_instance = None
 
 def switch_to_next_app(shared_class):
     app_names = list(APP_ORDER)

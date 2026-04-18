@@ -10,6 +10,9 @@ from apps.base_app import BaseApp
 
 
 class TranslationApp(BaseApp):
+    name = "translation"
+    label = "Translate"
+
     @staticmethod
     def _parse_active_idx(idx):
         if idx is None or isinstance(idx, bool):
@@ -22,7 +25,6 @@ class TranslationApp(BaseApp):
 
     def __init__(self, shared_class):
         super().__init__(shared_class)
-        self.name = "translation"
         self.mode = "default"
         self.translation_data = None
         self.translation_groupings = None
