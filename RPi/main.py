@@ -77,6 +77,17 @@ def main() -> None:
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _term)
 
+    # PiSugar custom button → SIGUSR1 → toggle display sleep. The display is
+    # blanked via SSD1306 poweroff (buffer preserved) and button input is
+    # gated, so the user lands back exactly where they left off on wake.
+    def _toggle_display(_signum, _frame):
+        try:
+            if shared.display is not None:
+                shared.display.toggle_sleep()
+        except Exception:
+            logging.exception("display toggle failed")
+    signal.signal(signal.SIGUSR1, _toggle_display)
+
     shared = SharedClass()
     shared.display = Display(shared)
 

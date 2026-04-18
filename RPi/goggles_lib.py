@@ -49,6 +49,8 @@ class SharedClass:
     # Set by pairing after BLE knock; main() waits before binding TCP.
     self.paired_tcp_host = None  # str | None — Pi LAN IP to bind (never 0.0.0.0 in production)
     self.tcp_bind_ready = Event()
+    # Set by Display.sleep()/wake(); GoggleButton consults it to gate input.
+    self.display_sleeping = Event()
 
 # -- WebSocket Server Class --
 class WebSocketServer:
@@ -303,7 +305,13 @@ class GoggleButton:
             count = self.click_count
             self.click_count = 0
             self.click_timer = None
-            
+
+        # Display asleep (toggled via PiSugar custom button) — swallow input so
+        # we act as a true "screen off" with no side effects. App state is frozen
+        # exactly where it was; wake restores both panel and button handling.
+        if self.shared_class.display_sleeping.is_set():
+            return
+
         if self.button_callback:
             self.button_callback(count)
 
@@ -587,6 +595,33 @@ class Display:
             if self.hardware_available:
                 self.oled.fill(0)
                 self.oled.show()
+
+    def sleep(self):
+        """Blank the panel without touching the frame buffer or app state.
+        SSD1306's 0xAE (display-off) preserves DDRAM, so wake() is instant
+        and shows whatever the running app has drawn in the meantime."""
+        self.shared_class.display_sleeping.set()
+        if self.hardware_available:
+            with self.display_lock:
+                try:
+                    self.oled.poweroff()
+                except Exception as e:
+                    log.warning("display sleep: poweroff failed: %s", e)
+
+    def wake(self):
+        self.shared_class.display_sleeping.clear()
+        if self.hardware_available:
+            with self.display_lock:
+                try:
+                    self.oled.poweron()
+                except Exception as e:
+                    log.warning("display wake: poweron failed: %s", e)
+
+    def toggle_sleep(self):
+        if self.shared_class.display_sleeping.is_set():
+            self.wake()
+        else:
+            self.sleep()
     
     def get_display_data(self):
         """Get current display data"""
