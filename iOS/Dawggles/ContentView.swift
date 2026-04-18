@@ -10,9 +10,16 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
 
+    private var showPairedDashboard: Bool {
+        #if DEBUG
+        if MockPiTesting.isEnabled { return true }
+        #endif
+        return accessorySetup.pairedAccessory != nil
+    }
+
     var body: some View {
         Group {
-            if accessorySetup.pairedAccessory != nil {
+            if showPairedDashboard {
                 PairedView()
             } else {
                 PairingView()
@@ -20,6 +27,11 @@ struct ContentView: View {
         }
         .onAppear {
             accessorySetup.ensureSessionActivated()
+            #if DEBUG
+            if MockPiTesting.isEnabled {
+                DawgglesConnection.shared.connectWebSocket()
+            }
+            #endif
         }
     }
 }
@@ -167,9 +179,17 @@ private struct PairedView: View {
                                 .scaledToFit()
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                             if let idx = liveAlignment.lastSentIndex {
-                                Text("Active ROI: \(idx)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Active ROI: \(idx)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                    if let roiText = liveAlignment.lastSentROIText {
+                                        Text(roiText)
+                                            .font(.caption)
+                                            .foregroundStyle(.primary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
                             }
                         }
                     }

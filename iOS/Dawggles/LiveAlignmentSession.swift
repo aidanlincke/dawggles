@@ -2,8 +2,8 @@
 //  LiveAlignmentSession.swift
 //  Dawggles
 //
-//  Runs periodically while the Pi sends live JPEGs: align live frame to the scan still,
-//  pick which ROI is under the screen center, tell the Pi when the index changes.
+//  Live preview: throttled full-frame OCR, nearest-center focus, Vision **recognition_confidence** merge so
+//  shaky frames don’t overwrite good text; send full Pi payload only when merged lines change, else `focus` only.
 //
 
 import Combine
@@ -13,6 +13,12 @@ private struct IndexHysteresis {
     let consecutiveTicksRequired: Int
     private var streakIndex: Int?
     private var streakCount = 0
+
+    init(consecutiveTicksRequired: Int) {
+        self.consecutiveTicksRequired = consecutiveTicksRequired
+        self.streakIndex = nil
+        self.streakCount = 0
+    }
 
     mutating func reset() {
         streakIndex = nil
@@ -33,33 +39,48 @@ private struct IndexHysteresis {
 
 final class LiveAlignmentSession: ObservableObject {
     @Published private(set) var lastSentIndex: Int?
+    /// `translated_text` for the grouping at `lastSentIndex`.
+    @Published private(set) var lastSentROIText: String?
 
     private weak var connection: DawgglesConnection?
-    private var referenceImage: UIImage?
-    private var groupings: [TranslationGrouping] = []
     private var latestLiveFrame: UIImage?
     private var tick: AnyCancellable?
     private var hysteresis = IndexHysteresis(consecutiveTicksRequired: 4)
     private var lastCommittedIndex: Int?
+    private var consecutiveAlignmentMisses = 0
+    private let alignmentMissesBeforeHysteresisReset = 8
+
+    private var lastLiveOCRTime: CFAbsoluteTime = 0
+    private let liveOCRMinInterval: CFTimeInterval = 0.28
+    private var ocrSeq: Int = 0
+
+    /// Running merge of OCR lines; prefers higher-confidence / stable readings per band index.
+    private var committedGroupings: [[String: Any]]?
+    /// Last snapshot actually sent to the Pi (for focus-only updates).
+    private var lastPiFingerprint: String?
+    private var lastPiActive: Int?
 
     func disarm() {
         tick?.cancel()
         tick = nil
         connection = nil
-        referenceImage = nil
-        groupings = []
         latestLiveFrame = nil
         hysteresis.reset()
+        consecutiveAlignmentMisses = 0
+        lastLiveOCRTime = 0
+        ocrSeq = 0
         lastCommittedIndex = nil
         lastSentIndex = nil
+        lastSentROIText = nil
+        committedGroupings = nil
+        lastPiFingerprint = nil
+        lastPiActive = nil
     }
 
-    /// Start alignment for this scan; requires live JPEGs from the Pi on `connection`.
-    func arm(reference: UIImage, groupings rows: [[String: Any]], connection: DawgglesConnection) {
+    /// Start live translation: OCR runs on preview frames only; requires Pi JPEG stream on `connection`.
+    func arm(connection: DawgglesConnection) {
         disarm()
         self.connection = connection
-        referenceImage = reference
-        groupings = rows.enumerated().compactMap { i, d in TranslationGrouping(dictionary: d, arrayIndex: i) }
 
         tick = Timer.publish(every: 1.0 / 10.0, on: .main, in: .common)
             .autoconnect()
@@ -73,27 +94,141 @@ final class LiveAlignmentSession: ObservableObject {
     }
 
     private func alignmentTick() {
-        guard let ref = referenceImage,
-              let live = latestLiveFrame,
+        guard let live = latestLiveFrame,
               let conn = connection,
-              conn.isConnected,
-              !groupings.isEmpty else { return }
+              conn.isConnected else { return }
 
-        guard let candidate = FocusAlignment.activeGroupingIndex(
-            reference: ref,
-            live: live,
-            groupings: groupings
-        ) else {
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastLiveOCRTime < liveOCRMinInterval { return }
+        lastLiveOCRTime = now
+
+        let image = live
+        ocrSeq += 1
+        let seq = ocrSeq
+        DispatchQueue.global(qos: .userInitiated).async {
+            let g = ImageTranslator.buildGroupings(from: image)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, seq == self.ocrSeq else { return }
+                self.handleLiveOCR(groupings: g, connection: conn)
+            }
+        }
+    }
+
+    private func handleLiveOCR(groupings raw: [[String: Any]], connection conn: DawgglesConnection) {
+        if raw.isEmpty {
+            consecutiveAlignmentMisses += 1
+            if consecutiveAlignmentMisses >= alignmentMissesBeforeHysteresisReset {
+                hysteresis.reset()
+                consecutiveAlignmentMisses = 0
+            }
+            return
+        }
+        consecutiveAlignmentMisses = 0
+
+        let merged = Self.mergeCommittedWithNew(previous: committedGroupings, new: raw)
+        committedGroupings = merged
+
+        let parsed = merged.enumerated().compactMap { i, d in TranslationGrouping(dictionary: d, arrayIndex: i) }
+        guard !parsed.isEmpty else { return }
+
+        let nearest = ImageTranslator.indexOfGroupingNearestNormalizedCenter(merged)
+        let clampedNearest = min(max(0, nearest), merged.count - 1)
+
+        if lastCommittedIndex == nil {
+            lastCommittedIndex = clampedNearest
             hysteresis.reset()
+        } else if clampedNearest == lastCommittedIndex {
+            hysteresis.reset()
+        } else if hysteresis.shouldCommit(clampedNearest) {
+            lastCommittedIndex = clampedNearest
+            hysteresis.reset()
+        }
+
+        let active = lastCommittedIndex ?? clampedNearest
+        let safeActive = min(max(0, active), merged.count - 1)
+
+        let fingerprint = Self.groupingTextsFingerprint(merged)
+        if fingerprint == lastPiFingerprint, safeActive == lastPiActive {
             return
         }
 
-        guard hysteresis.shouldCommit(candidate) else { return }
-
-        if candidate != lastCommittedIndex {
-            lastCommittedIndex = candidate
-            lastSentIndex = candidate
-            conn.sendActiveGroupingIndex(candidate)
+        if fingerprint == lastPiFingerprint, safeActive != lastPiActive {
+            conn.sendActiveGroupingIndex(safeActive)
+            lastPiActive = safeActive
+        } else {
+            let summary = merged.compactMap { $0["translated_text"] as? String }.joined(separator: " ")
+            conn.sendTranslationPayload(data: summary, groupings: merged, activeIdx: safeActive)
+            lastPiFingerprint = fingerprint
+            lastPiActive = safeActive
         }
+
+        let idxChanged = lastSentIndex != safeActive
+        lastSentIndex = safeActive
+        let label = (merged[safeActive]["translated_text"] as? String) ?? ""
+        lastSentROIText = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : label
+
+        if idxChanged {
+            if let t = lastSentROIText, !t.isEmpty {
+                print("LiveAlignment: ROI \(safeActive) (nearest-center) — \(t)")
+            } else {
+                print("LiveAlignment: ROI \(safeActive) (nearest-center) — (no text)")
+            }
+        }
+    }
+
+    // MARK: - Confidence merge + similarity
+
+    private static func recognitionConfidence(from d: [String: Any]) -> Double {
+        if let n = d["recognition_confidence"] as? Double { return n }
+        if let n = d["recognition_confidence"] as? Float { return Double(n) }
+        if let n = d["recognition_confidence"] as? NSNumber { return n.doubleValue }
+        return 1
+    }
+
+    /// When band count matches, per-index merge; otherwise take fresh OCR (layout changed).
+    private static func mergeCommittedWithNew(previous: [[String: Any]]?, new: [[String: Any]]) -> [[String: Any]] {
+        guard let prev = previous, prev.count == new.count, !new.isEmpty else { return new }
+        return zip(prev, new).map { mergeGroupingDict(old: $0, new: $1) }
+    }
+
+    private static func mergeGroupingDict(old: [String: Any], new: [String: Any]) -> [String: Any] {
+        let oT = (old["translated_text"] as? String) ?? ""
+        let nT = (new["translated_text"] as? String) ?? ""
+        let oC = recognitionConfidence(from: old)
+        let nC = recognitionConfidence(from: new)
+        if oT.isEmpty { return new }
+        if nT.isEmpty { return old }
+        if stringsSimilar(oT, nT) {
+            return nC >= oC ? new : old
+        }
+        if nC >= oC + 0.12 {
+            return new
+        }
+        return old
+    }
+
+    private static func normalizeForCompare(_ s: String) -> String {
+        s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private static func stringsSimilar(_ a: String, _ b: String) -> Bool {
+        let x = normalizeForCompare(a)
+        let y = normalizeForCompare(b)
+        if x.isEmpty || y.isEmpty { return false }
+        if x == y { return true }
+        if x.contains(y) || y.contains(x) { return true }
+        let xs = Set(x.split(separator: " ").map(String.init))
+        let ys = Set(y.split(separator: " ").map(String.init))
+        let inter = xs.intersection(ys).count
+        let uni = xs.union(ys).count
+        guard uni > 0 else { return false }
+        return Float(inter) / Float(uni) >= 0.55
+    }
+
+    private static func groupingTextsFingerprint(_ g: [[String: Any]]) -> String {
+        g.map { ($0["translated_text"] as? String) ?? "" }.joined(separator: "\u{1e}")
     }
 }

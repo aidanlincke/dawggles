@@ -31,15 +31,15 @@ class DawgglesConnection: ObservableObject {
 
     // MARK: Live stream + alignment (Pi binary JPEGs)
 
-    /// After OCR we may wait for the first live frame before starting `LiveAlignmentSession`.
-    private var alignmentPayloadWaitingForFirstLiveFrame: (reference: UIImage, groupings: [[String: Any]])?
+    /// After shutter still, wait for the first preview JPEG before arming live OCR (no still-frame OCR).
+    private var pendingTranslationLiveArm = false
     /// Pi sent `preview_stopped` or we disconnected — don't arm alignment when OCR completes late.
     private var suppressAlignmentArmUntilNextStill = false
 
     private init() {}
 
     private func tearDownLiveAlignmentAndPreview() {
-        alignmentPayloadWaitingForFirstLiveFrame = nil
+        pendingTranslationLiveArm = false
         previewImage = nil
         liveAlignment?.disarm()
     }
@@ -68,6 +68,15 @@ class DawgglesConnection: ObservableObject {
     }
 
     private func startConnectionAttempt() {
+        #if DEBUG
+        if MockPiTesting.isEnabled {
+            hostCandidates = [MockPiTesting.websocketHost]
+            hostIndex = 0
+            openWebSocket(host: MockPiTesting.websocketHost, logLabel: "mock Pi (Mac)")
+            return
+        }
+        #endif
+
         guard let wifiIP = currentWiFiIPv4() else {
             print("DawgglesConnection: no WiFi IPv4 yet (still waiting for AP DHCP?)")
             scheduleReconnectWaitingForWiFi()
@@ -83,6 +92,10 @@ class DawgglesConnection: ObservableObject {
         print("DawgglesConnection: WiFi IPv4 is \(wifiIP)")
 
         let host = hostCandidates[safe: hostIndex] ?? defaultHost
+        openWebSocket(host: host, logLabel: "hotspot")
+    }
+
+    private func openWebSocket(host: String, logLabel: String) {
         guard let wsURL = URL(string: "ws://\(host):\(websocketPort.rawValue)/") else {
             print("DawgglesConnection: invalid WebSocket URL for host \(host)")
             isConnecting = false
@@ -136,7 +149,7 @@ class DawgglesConnection: ObservableObject {
             }
         }
 
-        print("DawgglesConnection: starting connection to \(host):\(websocketPort.rawValue) over WiFi")
+        print("DawgglesConnection: connecting to \(host):\(websocketPort.rawValue) (\(logLabel))")
         conn.start(queue: .global(qos: .userInitiated))
     }
 
@@ -293,13 +306,9 @@ class DawgglesConnection: ObservableObject {
                         self.lastPreviewWall = now
                         DispatchQueue.main.async { [weak self] in
                             guard let self else { return }
-                            if let pending = self.alignmentPayloadWaitingForFirstLiveFrame {
-                                self.liveAlignment?.arm(
-                                    reference: pending.reference,
-                                    groupings: pending.groupings,
-                                    connection: self
-                                )
-                                self.alignmentPayloadWaitingForFirstLiveFrame = nil
+                            if self.pendingTranslationLiveArm, !self.suppressAlignmentArmUntilNextStill {
+                                self.pendingTranslationLiveArm = false
+                                self.liveAlignment?.arm(connection: self)
                             }
                             self.previewImage = image
                             self.liveAlignment?.onLiveFrame(image)
@@ -332,30 +341,17 @@ class DawgglesConnection: ObservableObject {
             }
             let app = obj["app"] as? String ?? "translation"
             if app == "translation" {
-                Task { await self.runOCRAndSendGroupingsToPi(image: image) }
+                Task { await self.beginTranslationLiveSessionAfterStill() }
             }
         }
     }
 
-    private func runOCRAndSendGroupingsToPi(image: UIImage) async {
-        let groupings: [[String: Any]] = await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let g = ImageTranslator.buildGroupings(from: image)
-                continuation.resume(returning: g)
-            }
-        }
-
-        let summary = groupings.compactMap { $0["translated_text"] as? String }.joined(separator: " ")
-
+    /// Disarm prior session; Pi shows "Processing…" until the first live-frame OCR payload arrives.
+    private func beginTranslationLiveSessionAfterStill() async {
         await MainActor.run {
             self.liveAlignment?.disarm()
-            self.sendJSON([
-                "app": "translation",
-                "data": summary,
-                "groupings": groupings,
-            ])
             if !self.suppressAlignmentArmUntilNextStill {
-                self.alignmentPayloadWaitingForFirstLiveFrame = (reference: image, groupings: groupings)
+                self.pendingTranslationLiveArm = true
             }
         }
     }
@@ -371,7 +367,17 @@ class DawgglesConnection: ObservableObject {
         conn.send(content: payload, contentContext: context, isComplete: true, completion: .idempotent)
     }
 
-    /// Tell the Pi which `groupings` row the user is looking at (center reticle), after alignment + hysteresis.
+    /// Full translation update from live OCR: groupings, summary `data`, and which line is nearest the image center.
+    func sendTranslationPayload(data: String, groupings: [[String: Any]], activeIdx: Int) {
+        sendJSON([
+            "app": "translation",
+            "data": data,
+            "groupings": groupings,
+            "active_idx": activeIdx,
+        ])
+    }
+
+    /// Tell the Pi which `groupings` row is active (optional; live path uses `sendTranslationPayload`).
     func sendActiveGroupingIndex(_ index: Int) {
         sendJSON([
             "app": "translation",

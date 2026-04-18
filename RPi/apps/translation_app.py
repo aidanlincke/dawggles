@@ -10,6 +10,16 @@ from apps.base_app import BaseApp
 
 
 class TranslationApp(BaseApp):
+    @staticmethod
+    def _parse_active_idx(idx):
+        if idx is None or isinstance(idx, bool):
+            return None
+        if isinstance(idx, int):
+            return idx
+        if isinstance(idx, float):
+            return int(idx) if idx.is_integer() else None
+        return None
+
     def __init__(self, shared_class):
         super().__init__(shared_class)
         self.name = "translation"
@@ -166,5 +176,11 @@ class TranslationApp(BaseApp):
                 return
             self.translation_data = message.get("data")
             self.translation_groupings = message.get("groupings")
-            self.display_idx = 0
+            idx = message.get("active_idx")
+            g = self.translation_groupings
+            parsed = self._parse_active_idx(idx)
+            if parsed is not None and g and 0 <= parsed < len(g):
+                self.display_idx = parsed
+            else:
+                self.display_idx = 0
             self.update_display()
