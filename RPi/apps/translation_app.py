@@ -29,24 +29,20 @@ class TranslationApp(BaseApp):
         })
 
     def render_display(self, display):
-        if not self.translation_data:
-            if display.hardware_available:
-                display.oled.fill(0)
-                # Show a default prompt when no translation is actively being viewed
-                display._render_text(["TRANSLATION", "", "Press button", "to scan"])
-                display.oled.show()
+        if not display.hardware_available:
             return
-            
-        # Basic placeholder for viewing translation data
-        data = str(self.translation_data)
-        display._render_text([data[:15], data[15:30]])
+        display.oled.fill(0)
+        display.draw_app_header("Translate")
+        if not self.translation_data:
+            display.oled.text("Press the button", 0, 29, 1)
+            display.oled.text("to scan.", 0, 41, 1)
+        else:
+            data = str(self.translation_data)
+            display.oled.text(data[:15], 0, 16, 1)
+            display.oled.text(data[15:30], 0, 28, 1)
+        display.oled.show()
 
     def on_click(self, click_count):
-        if click_count >= 3:
-            from app_manager import switch_to_next_app
-            switch_to_next_app(self.shared_class)
-            return
-
         with self.shared_class.display_lock:
             if click_count == 1:
                 import logging

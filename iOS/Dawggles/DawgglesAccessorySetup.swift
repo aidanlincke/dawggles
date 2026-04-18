@@ -86,23 +86,21 @@ final class DawgglesAccessorySetup: ObservableObject {
     /// descriptor to have had `ssid` set.
     func joinHotspot(accessory: ASAccessory) {
         NEHotspotConfigurationManager.shared.joinAccessoryHotspot(accessory,
-                                                                  passphrase: Self.hotspotPassword) { [weak self] error in
+                                                                  passphrase: Self.hotspotPassword) { error in
             Task { @MainActor in
-                guard let self else { return }
-                let shouldConnect: Bool
                 if let error {
                     let ns = error as NSError
-                    // alreadyAssociated just means we're already on the hotspot — still connect
-                    shouldConnect = ns.domain == NEHotspotConfigurationErrorDomain
+                    let isAlreadyAssociated = ns.domain == NEHotspotConfigurationErrorDomain
                         && ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue
-                } else {
-                    shouldConnect = true
-                }
-                if shouldConnect {
-                    Task {
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
-                        DawgglesConnection.shared.connectWebSocket()
+                    if !isAlreadyAssociated {
+                        print("DawgglesAccessorySetup: joinAccessoryHotspot: \(error.localizedDescription)")
                     }
+                }
+                // Always attempt connection — the WebSocket retry loop handles cases
+                // where DHCP hasn't finished yet or the join silently failed.
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    DawgglesConnection.shared.connectWebSocket()
                 }
             }
         }

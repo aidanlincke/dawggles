@@ -94,7 +94,17 @@ class WebSocketServer:
             log.exception("websocket server failed to start: %s", e)
 
     async def _serve(self, host, port):
-        async with websockets.serve(self._handler, host, port, max_size=MAX_JSON_MESSAGE_BYTES):
+        # Tight keepalive so a dirty disconnect (phone drops the hotspot without
+        # sending FIN, e.g. after unpair) is detected in ~5-8s instead of the
+        # library default (~20-40s) that left the connection indicator stale.
+        async with websockets.serve(
+            self._handler,
+            host,
+            port,
+            max_size=MAX_JSON_MESSAGE_BYTES,
+            ping_interval=5,
+            ping_timeout=3,
+        ):
             self._listening_event.set()
             log.info("websocket server listening on %s:%s", host, port)
             await asyncio.Future()  # run forever
@@ -339,6 +349,8 @@ class Display:
             time.sleep(1)
             if not self.hardware_available or self.shared_class.server is None:
                 continue
+            if str(self.display_data.get("status", "")).startswith("pairing"):
+                continue
             connected = self.shared_class.server.connected
             if connected == self._last_connected:
                 continue
@@ -350,22 +362,28 @@ class Display:
                 self.oled.show()
 
     def _draw_status_bar(self):
-        """Small connection indicator in the top-right corner. No-op during pairing."""
+        """WiFi-style connection indicator in top-right corner (x=119–127, y=0–7)."""
         if not self.hardware_available or self.shared_class.server is None:
             return
+        if str(self.display_data.get("status", "")).startswith("pairing"):
+            return
         connected = self.shared_class.server.connected
-        # 3 signal bars, bottom-aligned, rightmost corner (x=119..126, y=1..7)
-        # bar heights: 3px, 5px, 7px with 1px gaps
-        bx = [119, 122, 125]
-        bh = [3, 5, 7]
-        base_y = 7
-        if connected:
-            for x, h in zip(bx, bh):
-                self.oled.fill_rect(x, base_y - h + 1, 2, h, 1)
-        else:
-            # × in the same bounding box (119,1)–(126,7)
-            self.oled.line(119, 1, 126, 7, 1)
-            self.oled.line(126, 1, 119, 7, 1)
+
+        # Outer arc (y=0–2)
+        self.oled.hline(121, 0, 5, 1)   # top: x=121-125
+        self.oled.pixel(120, 1, 1)
+        self.oled.pixel(126, 1, 1)
+        self.oled.pixel(119, 2, 1)
+        self.oled.pixel(127, 2, 1)
+        # Middle arc (y=3–4)
+        self.oled.hline(122, 3, 3, 1)   # top: x=122-124
+        self.oled.pixel(121, 4, 1)
+        self.oled.pixel(125, 4, 1)
+        # Dot (y=6)
+        self.oled.pixel(123, 6, 1)
+
+        if not connected:
+            self.oled.line(119, 0, 127, 7, 1)
 
     def _render_text(self, lines: list, color: int = 1):
         if not self.hardware_available:
@@ -380,7 +398,7 @@ class Display:
             start_y = max(0, (self.oled.height - total_height) // 2)
 
             for i, line in enumerate(lines):
-                tw = len(line) * 8
+                tw = len(line) * 6
                 tx = max(0, (self.oled.width - tw) // 2)
                 ty = start_y + (i * 10)
                 self.oled.text(line, tx, ty, color)
@@ -427,88 +445,132 @@ class Display:
                     self.oled.show()
 
     def show_pairing_waiting(self):
-        """Display 'OPEN APP / to pair' while BLE is advertising."""
+        """Welcome screen shown while BLE is advertising."""
         with self.display_lock:
+            self.display_data["status"] = "pairing_waiting"
             if self.temp_message_timer:
                 self.temp_message_timer.cancel()
                 self.temp_message_timer = None
             if not self.hardware_available:
-                log.info("OLED [pairing]: OPEN APP to pair")
+                log.info("OLED [pairing]: waiting for iPhone")
                 return
             try:
                 self.oled.fill(0)
-                lines = ["OPEN APP", "to pair"]
-                total_h = len(lines) * 10
-                sy = max(0, (self.oled.height - total_h) // 2)
-                for i, line in enumerate(lines):
-                    tx = max(0, (self.oled.width - len(line) * 6) // 2)
-                    self.oled.text(line, tx, sy + i * 10, 1)
+
+                # Rounded phone shell (left panel)
+                px, py, pw, ph = 2, 8, 30, 48
+                self.oled.hline(px + 3, py, pw - 6, 1)
+                self.oled.hline(px + 3, py + ph - 1, pw - 6, 1)
+                self.oled.vline(px, py + 3, ph - 6, 1)
+                self.oled.vline(px + pw - 1, py + 3, ph - 6, 1)
+
+                # Rounded corners
+                self.oled.pixel(px + 1, py + 1, 1)
+                self.oled.pixel(px + 2, py, 1)
+                self.oled.pixel(px + pw - 2, py + 1, 1)
+                self.oled.pixel(px + pw - 3, py, 1)
+                self.oled.pixel(px + 1, py + ph - 2, 1)
+                self.oled.pixel(px + 2, py + ph - 1, 1)
+                self.oled.pixel(px + pw - 2, py + ph - 2, 1)
+                self.oled.pixel(px + pw - 3, py + ph - 1, 1)
+
+                # Edge-to-edge display + small notch (modern phone look)
+                sx, sy, sw, sh = px + 3, py + 4, pw - 6, ph - 8
+                self.oled.rect(sx, sy, sw, sh, 1)
+                notch_w = 8
+                notch_x = px + (pw - notch_w) // 2
+                self.oled.fill_rect(notch_x, sy, notch_w, 2, 0)
+                self.oled.hline(notch_x + 1, sy + 2, notch_w - 2, 1)
+
+                # Bluetooth symbol (larger + mirrored left/right geometry)
+                cx, cy = px + pw // 2, py + 22
+                self.oled.vline(cx, cy - 10, 21, 1)
+                self.oled.line(cx - 7, cy - 4, cx, cy, 1)
+                self.oled.line(cx, cy, cx - 7, cy + 4, 1)
+                self.oled.line(cx, cy - 10, cx + 7, cy - 4, 1)
+                self.oled.line(cx + 7, cy - 4, cx, cy, 1)
+                self.oled.line(cx, cy, cx + 7, cy + 4, 1)
+                self.oled.line(cx + 7, cy + 4, cx, cy + 10, 1)
+
+                # Pairing instruction copy
+                self.oled.text("Open the", 52, 20, 1)
+                self.oled.text("Dawggles app", 43, 32, 1)
+
                 self.oled.show()
             except Exception as e:
                 log.warning("OLED pairing waiting: %s", e)
 
-    def show_pairing_code(self, code: str, secs_left: int = 30):
-        """Display the 6-digit BLE pairing code in large text with live countdown."""
+    def show_pairing_code(self, code: str):
+        """Display the 6-digit BLE pairing code and confirmation controls."""
         with self.display_lock:
+            self.display_data["status"] = "pairing_code"
             if self.temp_message_timer:
                 self.temp_message_timer.cancel()
                 self.temp_message_timer = None
             if not self.hardware_available:
-                log.info("OLED [pairing code]: %s  %ds", code, secs_left)
+                log.info("OLED [pairing code]: %s", code)
                 return
             try:
                 self.oled.fill(0)
 
-                label = "PAIR CODE"
-                self.oled.text(label, max(0, (self.oled.width - len(label) * 6) // 2), 2, 1)
+                line1 = "Press the next button"
+                line2 = "if the codes match."
+                x1 = max(0, (self.oled.width - len(line1) * 6) // 2)
+                x2 = max(0, (self.oled.width - len(line2) * 6) // 2)
+                self.oled.text(line1, x1, 4, 1)
+                self.oled.text(line2, x2, 14, 1)
 
-                # Large code — size=2 gives 12px-wide, 16px-tall chars
-                try:
-                    cx = max(0, (self.oled.width - len(code) * 12) // 2)
-                    self.oled.text(code, cx, 16, 1, size=2)
-                except TypeError:
-                    # Older adafruit-framebuf without size param
-                    cx = max(0, (self.oled.width - len(code) * 6) // 2)
-                    self.oled.text(code, cx, 18, 1)
+                # Box framing the code (x=22–105, y=30–53)
+                box_x, box_y, box_w, box_h = 22, 30, 84, 24
+                self.oled.rect(box_x, box_y, box_w, box_h, 1)
+                self.oled.rect(box_x + 1, box_y + 1, box_w - 2, box_h - 2, 1)
 
-                hint = "BTN = CONFIRM"
-                self.oled.text(hint, max(0, (self.oled.width - len(hint) * 6) // 2), 40, 1)
-
-                # Countdown — right-align so digits don't jump around
-                countdown = f"{secs_left:2d}s"
-                self.oled.text(countdown, max(0, (self.oled.width - len(countdown) * 6) // 2), 52, 1)
+                # Large code centred inside box — size=2: 12px wide, 16px tall
+                cx = max(0, (self.oled.width - len(code) * 12) // 2)
+                code_y = box_y + 5
+                self.oled.text(code, cx, code_y, 1, size=2)
 
                 self.oled.show()
             except Exception as e:
                 log.warning("OLED pairing code: %s", e)
 
-    def show_pairing_confirmed(self):
-        """Display a checkmark and 'WAITING...' after the user confirms the pairing code."""
+    def show_pairing_confirmed(self, code: str):
+        """Display confirmed messaging while keeping the same code visible."""
         with self.display_lock:
+            self.display_data["status"] = "pairing_confirmed"
             if self.temp_message_timer:
                 self.temp_message_timer.cancel()
                 self.temp_message_timer = None
             if not self.hardware_available:
-                log.info("OLED [pairing]: confirmed — waiting for iPhone")
+                log.info("OLED [pairing confirmed]: %s", code)
                 return
             try:
                 self.oled.fill(0)
 
-                # Checkmark: two line segments drawn 3× for ~3px thickness
-                # p1 → p2 is the short down-right stroke; p2 → p3 is the long up-right stroke
-                p1 = (28, 28)
-                p2 = (46, 44)
-                p3 = (90, 10)
-                for dy in (-1, 0, 1):
-                    self.oled.line(p1[0], p1[1] + dy, p2[0], p2[1] + dy, 1)
-                    self.oled.line(p2[0], p2[1] + dy, p3[0], p3[1] + dy, 1)
+                line1 = "Code confirmed."
 
-                msg = "WAITING..."
-                self.oled.text(msg, max(0, (self.oled.width - len(msg) * 6) // 2), 54, 1)
+                x1 = max(0, (self.oled.width - len(line1) * 6) // 2)
+                self.oled.text(line1, x1, 4, 1)
+
+                # Keep the exact same code box and code position as pairing.
+                box_x, box_y, box_w, box_h = 22, 30, 84, 24
+                self.oled.rect(box_x, box_y, box_w, box_h, 1)
+                self.oled.rect(box_x + 1, box_y + 1, box_w - 2, box_h - 2, 1)
+
+                cx = max(0, (self.oled.width - len(code) * 12) // 2)
+                code_y = box_y + 5
+                self.oled.text(code, cx, code_y, 1, size=2)
 
                 self.oled.show()
             except Exception as e:
                 log.warning("OLED pairing confirmed: %s", e)
+
+    def draw_app_header(self, label: str):
+        """Standard top bar: label at left, divider at y=11, status bar at right.
+        Call after fill(0), before drawing content (which should start at y=14)."""
+        self.oled.text(label, 0, 2, 1)
+        self.oled.hline(0, 11, self.oled.width, 1)
+        self._draw_status_bar()
 
     def update_display(self, data):
         with self.display_lock:

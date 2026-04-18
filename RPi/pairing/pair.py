@@ -5,7 +5,8 @@ pairing/pair.py — BLE pairing for Dawggles (BlueZ Numeric Comparison).
 Exposes two public functions for use by main.py:
 
     is_paired()                        → bool
-    run_pairing_flow(display, button)  → bool   (True = paired successfully)
+    run_pairing_flow(display, confirm_button, cancel_button=None)  → bool
+                                        (True = paired successfully)
 
 System packages required (not pip):
     sudo apt install python3-dbus python3-gi
@@ -13,7 +14,6 @@ System packages required (not pip):
 
 import sys
 import threading
-import time
 import logging
 
 import dbus
@@ -40,9 +40,7 @@ AGENT_PATH        = "/org/dawggles/agent"
 ADV_PATH          = "/org/dawggles/advertisement0"
 DEVICE_NAME       = "Dawggles"
 PAIR_SERVICE_UUID = "0000d100-0000-1000-8000-00805f9b34fb"
-
 _CONFIRM_TIMEOUT_SECS = 30
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -110,63 +108,174 @@ def _register_advertisement(ad_mgr, timeout_seconds=15):
 class DawgglesAgent(dbus.service.Object):
     """
     BlueZ agent with capability "DisplayYesNo".
-    Shows the Numeric Comparison passkey on the OLED and waits for a button press
-    (or a 30-second timeout) to confirm or reject the pairing.
+    Shows the Numeric Comparison passkey on the OLED and waits for button input:
+    front/action button confirms, back/cycle button rejects.
+    If no choice is made, confirmation times out after 30 seconds.
     """
 
-    def __init__(self, bus, path, loop, display, button):
+    def __init__(self, bus, path, loop, display, confirm_button, cancel_button=None):
         super().__init__(bus, path)
-        self._loop    = loop
-        self._display = display
-        self._button  = button
+        self._bus           = bus
+        self._loop          = loop
+        self._display       = display
+        self._confirm_button = confirm_button
+        self._cancel_button  = cancel_button
+        self._decision_lock = threading.Lock()
+        self._active_confirmation = None
+
+    @staticmethod
+    def _as_bluez_error(message: str, error_name: str):
+        return dbus.exceptions.DBusException(message, name=error_name)
+
+    def _clear_button_callbacks(self):
+        self._confirm_button.update_callback(None)
+        if self._cancel_button is not None:
+            self._cancel_button.update_callback(None)
+
+    def _complete_active_confirmation(self, accepted: bool, reason: str) -> bool:
+        """Complete one in-flight confirmation. Returns True only when one was active."""
+        with self._decision_lock:
+            pending = self._active_confirmation
+            if not pending or pending.get("done"):
+                return False
+            pending["done"] = True
+            self._active_confirmation = None
+
+        timeout_id = pending.get("timeout_id")
+        if timeout_id is not None:
+            try:
+                GLib.source_remove(timeout_id)
+            except Exception:
+                pass
+
+        signal_cb = pending.get("signal_callback")
+        if signal_cb is not None:
+            try:
+                self._bus.remove_signal_receiver(
+                    signal_cb,
+                    signal_name="PropertiesChanged",
+                    dbus_interface=PROPS_IFACE,
+                )
+            except Exception:
+                pass
+
+        self._clear_button_callbacks()
+
+        code = pending["code"]
+        reply_handler = pending["reply_handler"]
+        error_handler = pending["error_handler"]
+
+        if accepted:
+            log.info("BLE pairing: confirmed by front button")
+            self._display.show_pairing_confirmed(code)
+            try:
+                reply_handler()
+            except Exception as e:
+                log.warning("BLE pairing: confirm reply failed: %s", e)
+            return True
+
+        self._display.show_pairing_waiting()
+        if reason == "remote_cancel":
+            log.info("BLE pairing: cancelled by iOS — still advertising")
+            err = self._as_bluez_error("Canceled", "org.bluez.Error.Canceled")
+        elif reason == "remote_disconnect":
+            log.info("BLE pairing: iOS disconnected during confirmation — still advertising")
+            err = self._as_bluez_error("Canceled", "org.bluez.Error.Canceled")
+        elif reason == "timeout":
+            log.info("BLE pairing: confirmation timed out — still advertising")
+            err = self._as_bluez_error("Timed out", "org.bluez.Error.Rejected")
+        elif reason == "back_button":
+            log.info("BLE pairing: rejected by button — still advertising")
+            err = self._as_bluez_error("Rejected", "org.bluez.Error.Rejected")
+        else:
+            log.info("BLE pairing: rejected — still advertising")
+            err = self._as_bluez_error("Rejected", "org.bluez.Error.Rejected")
+
+        try:
+            error_handler(err)
+        except Exception as e:
+            log.warning("BLE pairing: reject reply failed: %s", e)
+        return True
+
+    def _complete_active_confirmation_idle(self, accepted: bool, reason: str):
+        self._complete_active_confirmation(accepted, reason)
+        return False
 
     @dbus.service.method(AGENT_IFACE)
     def Release(self):
         pass
 
-    @dbus.service.method(AGENT_IFACE, in_signature="ou")
-    def RequestConfirmation(self, device, passkey):
+    @dbus.service.method(
+        AGENT_IFACE,
+        in_signature="ou",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def RequestConfirmation(self, device, passkey, reply_handler, error_handler):
         code = f"{int(passkey):06d}"
-        log.info("BLE pairing: code %s — press button to confirm (%ds timeout)",
-                 code, _CONFIRM_TIMEOUT_SECS)
+        log.info(
+            "BLE pairing: code %s — front confirms, back rejects (%ds timeout)",
+            code,
+            _CONFIRM_TIMEOUT_SECS,
+        )
 
-        confirmed = threading.Event()
-        stop_countdown = threading.Event()
+        # Defensive reset: if a stale confirmation is left behind, reject it.
+        self._complete_active_confirmation(False, "stale")
 
-        def on_button(click_count):
+        pending = {
+            "code": code,
+            "device": str(device),
+            "reply_handler": reply_handler,
+            "error_handler": error_handler,
+            "timeout_id": None,
+            "signal_callback": None,
+            "done": False,
+        }
+
+        with self._decision_lock:
+            self._active_confirmation = pending
+
+        def on_confirm(click_count):
             if click_count >= 1:
-                confirmed.set()
+                GLib.idle_add(self._complete_active_confirmation_idle, True, "front_button")
 
-        self._button.update_callback(on_button)
-        self._display.show_pairing_code(code, _CONFIRM_TIMEOUT_SECS)
+        def on_cancel(click_count):
+            if click_count >= 1:
+                GLib.idle_add(self._complete_active_confirmation_idle, False, "back_button")
 
-        def _countdown():
-            for secs_left in range(_CONFIRM_TIMEOUT_SECS - 1, -1, -1):
-                # Wait 1s or until stopped early (button press or timeout)
-                if stop_countdown.wait(timeout=1.0):
-                    break
-                self._display.show_pairing_code(code, secs_left)
+        self._confirm_button.update_callback(on_confirm)
+        if self._cancel_button is not None:
+            self._cancel_button.update_callback(on_cancel)
+        self._display.show_pairing_code(code)
 
-        countdown_thread = threading.Thread(target=_countdown, daemon=True)
-        countdown_thread.start()
+        def on_device_props_changed(iface, changed, invalidated, path=None):
+            if iface != DEVICE_IFACE or str(path) != str(device):
+                return
+            # Some iOS dismissal flows never trigger Agent1.Cancel, but do drop
+            # the underlying device connection while confirmation is pending.
+            if "Connected" in changed and not bool(changed.get("Connected", True)):
+                GLib.idle_add(self._complete_active_confirmation_idle, False, "remote_disconnect")
 
-        try:
-            accepted = confirmed.wait(timeout=_CONFIRM_TIMEOUT_SECS)
-        finally:
-            stop_countdown.set()
-            self._button.update_callback(None)
+        pending["signal_callback"] = on_device_props_changed
+        self._bus.add_signal_receiver(
+            on_device_props_changed,
+            signal_name="PropertiesChanged",
+            dbus_interface=PROPS_IFACE,
+            path_keyword="path",
+        )
 
-        countdown_thread.join(timeout=2.0)
+        def on_timeout():
+            self._complete_active_confirmation(False, "timeout")
+            return False
 
-        if not accepted:
-            log.info("BLE pairing: timed out — rejecting, still advertising")
-            self._display.show_pairing_waiting()
-            raise dbus.exceptions.DBusException(
-                "Timed out", name="org.bluez.Error.Rejected"
-            )
-
-        log.info("BLE pairing: confirmed by button press")
-        self._display.show_pairing_confirmed()
+        timeout_id = GLib.timeout_add_seconds(_CONFIRM_TIMEOUT_SECS, on_timeout)
+        with self._decision_lock:
+            if self._active_confirmation is pending and not pending.get("done"):
+                pending["timeout_id"] = timeout_id
+            else:
+                try:
+                    GLib.source_remove(timeout_id)
+                except Exception:
+                    pass
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
@@ -195,7 +304,8 @@ class DawgglesAgent(dbus.service.Object):
     @dbus.service.method(AGENT_IFACE)
     def Cancel(self):
         log.info("BLE: pairing cancelled by remote device")
-        self._display.show_pairing_waiting()
+        if not self._complete_active_confirmation(False, "remote_cancel"):
+            self._display.show_pairing_waiting()
 
 
 # ── LE Advertisement ───────────────────────────────────────────────────────────
@@ -239,13 +349,101 @@ def is_paired() -> bool:
         return False
 
 
-def run_pairing_flow(display, button) -> bool:
+def unpair_all() -> bool:
+    """Remove every BLE bond from the adapter. Returns True on success."""
+    try:
+        bus = dbus.SystemBus()
+        devices = get_bonded_devices(bus)
+        if not devices:
+            log.info("unpair_all: no bonded devices")
+            return True
+        adapter = dbus.Interface(
+            bus.get_object(BLUEZ_SERVICE, ADAPTER_PATH), ADAPTER_IFACE
+        )
+        for d in devices:
+            try:
+                adapter.RemoveDevice(d["path"])
+                log.info("Removed bonded device: %s (%s)", d["name"], d["address"])
+            except Exception as e:
+                log.warning("Could not remove %s: %s", d["path"], e)
+        return True
+    except Exception as e:
+        log.error("unpair_all failed: %s", e)
+        return False
+
+
+def perform_unpair_and_restart(shared_class) -> None:
+    """Full unpair: drop BLE bonds, drop any active WebSocket, then re-exec
+    the process so main.py falls back into the pairing flow. Used by both
+    the on-device Settings app and the iOS-initiated unpair message."""
+    import os
+    import sys
+    import time
+
+    display = getattr(shared_class, "display", None)
+    if display is not None:
+        try:
+            display.show_temporary_message(["Unpairing...", "Please wait."], duration=10.0)
+        except Exception as e:
+            log.warning("unpair: could not show banner: %s", e)
+
+    ok = unpair_all()
+    if not ok:
+        if display is not None:
+            try:
+                display.show_temporary_message(["Unable to unpair.", "Please try again."], duration=3.0)
+            except Exception:
+                pass
+        return
+
+    try:
+        with open("/tmp/dawggles_force_pair", "w") as f:
+            f.write("1")
+    except Exception as e:
+        log.warning("Could not write force-pair sentinel: %s", e)
+
+    if display is not None:
+        try:
+            display.show_temporary_message(["Unpaired.", "Restarting..."], duration=10.0)
+        except Exception:
+            pass
+    time.sleep(2.5)
+
+    # Release hardware before re-exec so the new process can claim it cleanly.
+    # Each step is best-effort — we always re-exec regardless of outcome.
+    camera_client = getattr(shared_class, "camera_client", None)
+    if camera_client is not None:
+        try:
+            camera_client.stop_capture_loop()
+        except Exception as e:
+            log.warning("unpair cleanup: stop_capture_loop: %s", e)
+        camera = getattr(camera_client, "camera", None)
+        if camera is not None:
+            for method in ("stop", "close"):
+                try:
+                    getattr(camera, method)()
+                except Exception as e:
+                    log.warning("unpair cleanup: camera.%s: %s", method, e)
+
+    for attr in ("button", "cycle_button"):
+        btn_wrapper = getattr(shared_class, attr, None)
+        gpio_btn = getattr(btn_wrapper, "btn", None) if btn_wrapper is not None else None
+        if gpio_btn is not None:
+            try:
+                gpio_btn.close()
+            except Exception as e:
+                log.warning("unpair cleanup: %s.close: %s", attr, e)
+
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def run_pairing_flow(display, confirm_button, cancel_button=None) -> bool:
     """
     Advertise BLE as "Dawggles" and wait for an iPhone to complete pairing.
 
     When iOS initiates Numeric Comparison, the 6-digit code is shown on the OLED.
-    The user presses the action button to confirm; the pairing is rejected after
-    30 seconds of inactivity and the device keeps advertising for the next attempt.
+    The user presses the front/action button to confirm or the back/cycle button
+    to reject, and the device keeps advertising for the next attempt.
 
     Blocks until pairing succeeds (returns True) or a fatal BLE setup error
     occurs (returns False).
@@ -270,7 +468,7 @@ def run_pairing_flow(display, button) -> bool:
         log.warning("BLE: could not set adapter alias: %s", e)
 
     # Register agent
-    agent = DawgglesAgent(bus, AGENT_PATH, loop, display, button)
+    agent = DawgglesAgent(bus, AGENT_PATH, loop, display, confirm_button, cancel_button)
     agent_mgr = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, BLUEZ_PATH), AGENT_MANAGER_IFACE
     )
@@ -318,10 +516,8 @@ def run_pairing_flow(display, button) -> bool:
             dev_props.Set(DEVICE_IFACE, "Trusted", dbus.Boolean(True))
             name = str(dev_props.Get(DEVICE_IFACE, "Name"))
             log.info("BLE: paired with '%s' — marked trusted", name)
-            display.show_temporary_message(["PAIRED!", name[:12]], duration=2.0)
         except Exception:
             log.info("BLE: pairing complete")
-            display.show_temporary_message(["PAIRED!"], duration=2.0)
         result["success"] = True
         loop.quit()
 
@@ -378,7 +574,9 @@ if __name__ == "__main__":
             print(f"\n┌─────────────────────────────┐")
             print(f"│   PAIRING CODE:  {code}   │")
             print(f"└─────────────────────────────┘")
-            print("Check that this matches the code on your iPhone.")
+            print("Press front button to confirm, back button to cancel.")
+        def show_pairing_confirmed(self, code):
+            print(f"Code confirmed: {code}")
         def show_temporary_message(self, lines, duration=2.0):
             print(" | ".join(lines))
 
