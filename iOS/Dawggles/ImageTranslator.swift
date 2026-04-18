@@ -7,6 +7,12 @@ import UIKit
 import Vision
 
 enum ImageTranslator {
+    /// Vision top-candidate confidence in **[0, 1]** (not perfectly calibrated). Drops very weak boxes that often
+    /// correspond to texture / “ghost” text. Raise (e.g. 0.55–0.6) if junk still appears; lower if real faint text is lost.
+    private static let minimumObservationConfidence: Double = 0.5
+    /// After band merge, drop a whole grouping whose **minimum** fragment confidence falls below this (typ. ≤ observation floor).
+    private static let minimumMergedGroupingConfidence: Double = 0.45
+
     /// OCR on-device; builds `groupings` for the Pi. `translated_text` is the recognized string (translation can be layered on later).
     /// Nearby lines (typical signs / packaging) are merged into one grouping with a union box and space-joined text.
     static func buildGroupings(from image: UIImage) -> [[String: Any]] {
@@ -14,7 +20,8 @@ enum ImageTranslator {
 
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
+        // Reduces invented “words” from background texture vs language-correction on packaging/labels.
+        request.usesLanguageCorrection = false
 
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up, options: [:])
         do {
@@ -28,9 +35,10 @@ enum ImageTranslator {
         var rows: [[String: Any]] = []
         for (i, obs) in observations.enumerated() {
             guard let candidate = obs.topCandidates(1).first else { continue }
+            let conf = Double(candidate.confidence)
+            guard conf >= minimumObservationConfidence else { continue }
             let text = candidate.string
             let b = obs.boundingBox
-            let conf = Double(candidate.confidence)
             // Store as Double so downstream `as? Double` / `TranslationGrouping` always sees numeric values
             // (plain CGFloat in [String: Any] often does not bridge to NSNumber).
             rows.append([
@@ -116,11 +124,18 @@ enum ImageTranslator {
             let columnRuns = splitBandIntoHorizontalRuns(band)
             for run in columnRuns {
                 let sortedRun = sortBoxesInBandReadingOrder(run)
-                groupings.append(unionGrouping(id: nextId, lines: sortedRun))
-                nextId += 1
+                let g = unionGrouping(id: nextId, lines: sortedRun)
+                if doubleField(g["recognition_confidence"]) >= minimumMergedGroupingConfidence {
+                    groupings.append(g)
+                    nextId += 1
+                }
             }
         }
-        return groupings
+        return groupings.enumerated().map { i, d in
+            var m = d
+            m["id"] = i
+            return m
+        }
     }
 
     private static func midY(_ b: LineBox) -> Double { b.y + 0.5 * b.h }
