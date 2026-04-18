@@ -4,9 +4,11 @@ GPS App - Stores its own GPS data and display updates
 from apps.base_app import BaseApp
 
 class GPSApp(BaseApp):
+    name = "gps"
+    label = "Navigate"
+
     def __init__(self, shared_class):
         super().__init__(shared_class)
-        self.name = "gps"
         self.gps_data = None
 
     def on_mount(self):
@@ -73,7 +75,7 @@ class GPSApp(BaseApp):
             return
 
         display.oled.fill(0)
-        display.draw_app_header("Navigate")
+        display.draw_app_header(self.label)
 
         if not self.gps_data:
             display.oled.text("Waiting for GPS.", 0, 29, 1)

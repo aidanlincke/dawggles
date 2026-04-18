@@ -275,6 +275,21 @@ class DawgglesConnection: ObservableObject {
            let imageData = Data(base64Encoded: b64),
            let image = UIImage(data: imageData) {
             DispatchQueue.main.async { self.receivedImage = image }
+            ImageTranslator.shared.processAndTranslate(image: image) { [weak self] blocks in
+                guard !blocks.isEmpty else { return }
+                let data = blocks.compactMap { $0.translatedText }.joined(separator: " / ")
+                let groupings: [[String: Any]] = blocks.map { block in
+                    [
+                        "text": block.text,
+                        "translated_text": block.translatedText ?? "",
+                        "x": block.boundingBox.minX,
+                        "y": block.boundingBox.minY,
+                        "w": block.boundingBox.width,
+                        "h": block.boundingBox.height,
+                    ]
+                }
+                self?.sendJSON(["app": "translation", "data": data, "groupings": groupings])
+            }
         }
     }
 

@@ -4,6 +4,7 @@ App Manager - switching between applications
 import logging
 from app_registry import APP_ORDER
 from apps.gps_app import GPSApp
+from apps.live_captions_app import LiveCaptionsApp
 from apps.settings_app import SettingsApp
 from apps.translation_app import TranslationApp
 
@@ -14,6 +15,7 @@ def initialize_apps(shared_class):
     global _APPS
     _APPS["translation"] = TranslationApp(shared_class)
     _APPS["gps"] = GPSApp(shared_class)
+    _APPS["live_captions"] = LiveCaptionsApp(shared_class)
     _APPS["settings"] = SettingsApp(shared_class)
     
     if tuple(_APPS.keys()) != APP_ORDER:

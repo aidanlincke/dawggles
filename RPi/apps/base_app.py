@@ -1,7 +1,9 @@
 class BaseApp:
+    name = "base"
+    label = "Base"
+
     def __init__(self, shared_class):
         self.shared_class = shared_class
-        self.name = "base"
 
     def on_mount(self):
         """Called when the app becomes the active app."""

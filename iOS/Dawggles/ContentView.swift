@@ -4,11 +4,13 @@
 //
 
 import SwiftUI
+import Translation
 
 // MARK: - Root
 
 struct ContentView: View {
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
+    @StateObject private var translator = ImageTranslator.shared
 
     var body: some View {
         Group {
@@ -21,6 +23,43 @@ struct ContentView: View {
         .onAppear {
             accessorySetup.ensureSessionActivated()
         }
+        .modifier(TranslationViewModifier(translator: translator))
+    }
+}
+
+// MARK: - Translation modifier
+
+private struct TranslationViewModifier: ViewModifier {
+    @ObservedObject var translator: ImageTranslator
+    @State private var configuration: TranslationSession.Configuration?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: translator.translationTrigger) {
+                if configuration == nil {
+                    configuration = TranslationSession.Configuration()
+                } else {
+                    configuration?.invalidate()
+                }
+            }
+            .translationTask(configuration) { session in
+                let blocks = translator.blocksToTranslate
+                guard !blocks.isEmpty else { return }
+
+                var translated: [TranslationBlock] = []
+                do {
+                    for block in blocks {
+                        let response = try await session.translate(block.text)
+                        var b = block
+                        b.translatedText = response.targetText
+                        translated.append(b)
+                    }
+                    translator.completeTranslation(translatedBlocks: translated)
+                } catch {
+                    print("TranslationViewModifier: translation failed — \(error)")
+                    translator.completeTranslation(translatedBlocks: blocks)
+                }
+            }
     }
 }
 

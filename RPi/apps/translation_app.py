@@ -3,14 +3,37 @@ Translation app — manages its own state, TCP messages, and display hooks.
 """
 from apps.base_app import BaseApp
 
+
+def _wrap(text, width=16):
+    """Word-wrap text to lines of at most `width` characters."""
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = (current + " " + word).strip()
+        if len(candidate) <= width:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            # If a single word is longer than width, hard-slice it
+            while len(word) > width:
+                lines.append(word[:width])
+                word = word[width:]
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
 class TranslationApp(BaseApp):
+    name = "translation"
+    label = "Translate"
+
     def __init__(self, shared_class):
         super().__init__(shared_class)
-        self.name = "translation"
         self.mode = "default"
         self.translation_data = None
         self.translation_groupings = None
-        self.display_idx = 0
 
     def on_mount(self):
         # Start camera if needed
@@ -32,37 +55,31 @@ class TranslationApp(BaseApp):
         if not display.hardware_available:
             return
         display.oled.fill(0)
-        display.draw_app_header("Translate")
-        if not self.translation_data:
+        display.draw_app_header(self.label)
+        if self.mode == "default":
             display.oled.text("Press the button", 0, 29, 1)
             display.oled.text("to scan.", 0, 41, 1)
-        else:
-            data = str(self.translation_data)
-            display.oled.text(data[:15], 0, 16, 1)
-            display.oled.text(data[15:30], 0, 28, 1)
+        elif self.mode == "translating":
+            display.oled.text("Translating...", 0, 29, 1)
+        elif self.mode == "viewing" and self.translation_data:
+            lines = _wrap(str(self.translation_data), width=16)
+            for i, line in enumerate(lines[:3]):
+                display.oled.text(line, 0, 16 + i * 12, 1)
         display.oled.show()
 
     def on_click(self, click_count):
-        with self.shared_class.display_lock:
-            if click_count == 1:
-                import logging
-                logging.info("TranslationApp: Shutter button pressed!")
-                if self.mode == "default":
-                    self.mode = "capturing"
-                    self.shared_class.display.show_temporary_message("CAPTURING...", 1.5)
-                    self.shared_class.shutter_event.set()
-                else:
-                    self.display_idx += 1
-                    self.update_display()
-            elif click_count == 2:
-                if self.mode != "default" and self.display_idx > 0:
-                    self.display_idx -= 1
-                    self.update_display()
+        if click_count == 1:
+            if self.mode == "default":
+                self.mode = "capturing"
+                self.shared_class.shutter_event.set()
+            elif self.mode == "viewing":
+                self.translation_data = None
+                self.mode = "default"
+                self.update_display()
 
     def on_capture_complete(self):
-        # We sent the picture, user can take another one if they want while waiting
-        self.mode = "default"
-        self.shared_class.display.show_temporary_message("SENT TO APP", 1.5)
+        self.mode = "translating"
+        self.update_display()
 
     def on_message(self, message):
         if message.get("_dawggles_ping") is True and self.shared_class.server:
@@ -80,7 +97,5 @@ class TranslationApp(BaseApp):
         if "data" in message:
             self.translation_data = message.get("data")
             self.translation_groupings = message.get("groupings")
-            self.display_idx = 0
-            # Switch out of default mode to display translations
             self.mode = "viewing"
             self.update_display()

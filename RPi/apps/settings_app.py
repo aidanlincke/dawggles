@@ -7,9 +7,11 @@ log = logging.getLogger(__name__)
 
 
 class SettingsApp(BaseApp):
+    name = "settings"
+    label = "Settings"
+
     def __init__(self, shared_class):
         super().__init__(shared_class)
-        self.name = "settings"
 
     def on_mount(self):
         # Cycle button goes home; action button executes the single item
@@ -38,7 +40,7 @@ class SettingsApp(BaseApp):
             return
         with d.display_lock:
             d.oled.fill(0)
-            d.draw_app_header("Settings")
+            d.draw_app_header(self.label)
 
             d.oled.text("> Unpair", 0, 16, 1)
 

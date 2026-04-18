@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import queue
+import socket
 import time
 from threading import Event, Lock, Thread, Timer
 
@@ -241,17 +242,14 @@ class CameraClient:
                 self.shared_class.shutter_event.clear()
 
     def send_captured_jpeg_to_client(self):
-        """Push JPEG (or ready signal) over TCP using shared.current_app — no app-specific names here."""
+        """Push JPEG over TCP using shared.current_app — no app-specific names here."""
         srv = self.shared_class.server
         app = self.shared_class.current_app
         if srv is None:
             return
         pic = self.shared_class.data.get("picture")
         if not pic:
-            srv.send_json({"app": app, "event": "picture_ready", "format": "jpeg"})
             return
-        
-        # Bypass Pillow and send the JPEG raw bytes
         b64 = base64.standard_b64encode(pic).decode("ascii")
         payload = {
             "app": app,
@@ -265,7 +263,7 @@ class CameraClient:
             if not srv.send_json(payload):
                 log.warning("picture: send_json failed (no tcp client?)")
         except ValueError:
-            srv.send_json({"app": app, "event": "picture_ready", "format": "jpeg"})
+            log.warning("picture: payload too large to send")
 
     def video_loop(self):
         while self.running:
@@ -320,6 +318,22 @@ class GoggleButton:
         self.button_callback = button_callback
 
 # -- Display Class --
+def _read_pisugar_battery() -> float | None:
+    """Query the PiSugar server (port 8423) for battery percentage.
+    Returns 0–100 float, or None if unavailable."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(("127.0.0.1", 8423))
+        s.sendall(b"get battery\n")
+        response = s.recv(64).decode("utf-8", errors="ignore")
+        s.close()
+        # response is like "battery: 85.50\n"
+        return max(0.0, min(100.0, float(response.split(":")[1].strip())))
+    except Exception:
+        return None
+
+
 class Display:
     def __init__(self, shared_class):
         self.shared_class = shared_class
@@ -327,6 +341,7 @@ class Display:
         self.display_lock = Lock()
         self.temp_message_timer = None
         self._last_connected = None
+        self._battery_level = _read_pisugar_battery()
         # Connection indicator is coupled 1:1 to the title bar — it only shows
         # when draw_app_header() has drawn a header. Any full-screen redraw
         # that doesn't call draw_app_header() must clear this flag so the
@@ -357,47 +372,85 @@ class Display:
             self.hardware_available = False
     
     def _status_poll_loop(self):
-        """Refresh the connection indicator whenever the WebSocket state changes."""
+        """Refresh status bar icons whenever connection state or battery level changes."""
+        battery_tick = 0
         while True:
             time.sleep(1)
             if not self.hardware_available or self.shared_class.server is None:
                 continue
             if not self._has_title_bar:
                 continue
+
             connected = self.shared_class.server.connected
-            if connected == self._last_connected:
-                continue
-            self._last_connected = connected
-            with self.display_lock:
-                # Clear the indicator bounding box, redraw, and push to display
-                self.oled.fill_rect(119, 0, 9, 8, 0)
-                self._draw_status_bar()
-                self.oled.show()
+            conn_changed = connected != self._last_connected
+            if conn_changed:
+                self._last_connected = connected
+
+            batt_changed = False
+            battery_tick += 1
+            if battery_tick >= 30:
+                battery_tick = 0
+                new_level = _read_pisugar_battery()
+                if new_level != self._battery_level:
+                    self._battery_level = new_level
+                    batt_changed = True
+
+            if conn_changed or batt_changed:
+                with self.display_lock:
+                    # Clear the full status icon zone (wifi + battery), redraw, push
+                    self.oled.fill_rect(105, 0, 23, 8, 0)
+                    self._draw_status_bar()
+                    self.oled.show()
+
+    def _draw_battery_icon(self):
+        """Battery icon at x=117–127, y=1–6. WiFi sits to its left.
+        Body outline: x=117–124 (8px wide, 6px tall).
+        Nub: x=125–127, y=2–5.
+        Interior fill: x=118–123 (6px), y=2–5 — filled left-to-right by level."""
+        o = self.oled
+        pct = self._battery_level
+
+        # Body outline
+        o.rect(117, 1, 8, 6, 1)
+        # Nub (positive terminal on the right)
+        o.vline(125, 2, 4, 1)
+        o.vline(126, 2, 4, 1)
+        o.pixel(127, 3, 1)
+        o.pixel(127, 4, 1)
+
+        # Interior fill (6px wide, 4px tall)
+        if pct is not None:
+            fill_w = round(pct / 100 * 6)
+            if fill_w > 0:
+                o.fill_rect(118, 2, fill_w, 4, 1)
 
     def _draw_status_bar(self):
-        """WiFi-style connection indicator in top-right corner (x=119–127, y=0–7).
-        Only drawn when a title bar is present — the two are a visual pair."""
+        """Status icons in top-right corner. Only drawn when a title bar is present.
+        Layout: wifi (x=105–113) · gap (x=114–116) · battery (x=117–127)."""
         if not self.hardware_available or self.shared_class.server is None:
             return
         if not self._has_title_bar:
             return
-        connected = self.shared_class.server.connected
 
+        connected = self.shared_class.server.connected
+        # WiFi icon at x=105–113 (9px wide), 3px gap before battery at x=117
         # Outer arc (y=0–2)
-        self.oled.hline(121, 0, 5, 1)   # top: x=121-125
-        self.oled.pixel(120, 1, 1)
-        self.oled.pixel(126, 1, 1)
-        self.oled.pixel(119, 2, 1)
-        self.oled.pixel(127, 2, 1)
+        self.oled.hline(107, 0, 5, 1)   # top: x=107-111
+        self.oled.pixel(106, 1, 1)
+        self.oled.pixel(112, 1, 1)
+        self.oled.pixel(105, 2, 1)
+        self.oled.pixel(113, 2, 1)
         # Middle arc (y=3–4)
-        self.oled.hline(122, 3, 3, 1)   # top: x=122-124
-        self.oled.pixel(121, 4, 1)
-        self.oled.pixel(125, 4, 1)
+        self.oled.hline(108, 3, 3, 1)   # x=108-110
+        self.oled.pixel(107, 4, 1)
+        self.oled.pixel(111, 4, 1)
         # Dot (y=6)
-        self.oled.pixel(123, 6, 1)
+        self.oled.pixel(109, 6, 1)
 
         if not connected:
-            self.oled.line(119, 0, 127, 7, 1)
+            self.oled.line(105, 0, 113, 7, 1)
+
+        self._draw_battery_icon()
 
     def _render_text(self, lines: list, color: int = 1):
         if not self.hardware_available:

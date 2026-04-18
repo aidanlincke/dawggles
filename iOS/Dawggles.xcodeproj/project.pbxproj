@@ -15,7 +15,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Dawggles.entitlements,
 			);
 			target = DD7108482F50189C00AC04E4 /* Dawggles */;
 		};
