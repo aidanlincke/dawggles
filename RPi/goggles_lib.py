@@ -327,6 +327,11 @@ class Display:
         self.display_lock = Lock()
         self.temp_message_timer = None
         self._last_connected = None
+        # Connection indicator is coupled 1:1 to the title bar — it only shows
+        # when draw_app_header() has drawn a header. Any full-screen redraw
+        # that doesn't call draw_app_header() must clear this flag so the
+        # status poll loop doesn't repaint an orphaned indicator.
+        self._has_title_bar = False
         Thread(target=self._status_poll_loop, daemon=True).start()
         
         if not OLED_AVAILABLE:
@@ -357,7 +362,7 @@ class Display:
             time.sleep(1)
             if not self.hardware_available or self.shared_class.server is None:
                 continue
-            if str(self.display_data.get("status", "")).startswith("pairing"):
+            if not self._has_title_bar:
                 continue
             connected = self.shared_class.server.connected
             if connected == self._last_connected:
@@ -370,10 +375,11 @@ class Display:
                 self.oled.show()
 
     def _draw_status_bar(self):
-        """WiFi-style connection indicator in top-right corner (x=119–127, y=0–7)."""
+        """WiFi-style connection indicator in top-right corner (x=119–127, y=0–7).
+        Only drawn when a title bar is present — the two are a visual pair."""
         if not self.hardware_available or self.shared_class.server is None:
             return
-        if str(self.display_data.get("status", "")).startswith("pairing"):
+        if not self._has_title_bar:
             return
         connected = self.shared_class.server.connected
 
@@ -398,6 +404,8 @@ class Display:
             return
         try:
             self.oled.fill(0)
+            # Centered text screens (boot messages, temp banners) have no title bar.
+            self._has_title_bar = False
 
             if isinstance(lines, str):
                 lines = [lines]
@@ -411,7 +419,6 @@ class Display:
                 ty = start_y + (i * 10)
                 self.oled.text(line, tx, ty, color)
 
-            self._draw_status_bar()
             self.oled.show()
         except OSError as e:
             if "No such file or directory: 'font5x8.bin'" in str(e):
@@ -449,7 +456,7 @@ class Display:
                 # Default app state is a blank screen so you can see through the goggles
                 if self.hardware_available:
                     self.oled.fill(0)
-                    self._draw_status_bar()
+                    self._has_title_bar = False
                     self.oled.show()
 
     def show_pairing_waiting(self):
@@ -464,6 +471,7 @@ class Display:
                 return
             try:
                 self.oled.fill(0)
+                self._has_title_bar = False
 
                 # Rounded phone shell (left panel)
                 px, py, pw, ph = 2, 8, 30, 48
@@ -520,6 +528,7 @@ class Display:
                 return
             try:
                 self.oled.fill(0)
+                self._has_title_bar = False
 
                 line1 = "Press the next button"
                 line2 = "if the codes match."
@@ -554,6 +563,7 @@ class Display:
                 return
             try:
                 self.oled.fill(0)
+                self._has_title_bar = False
 
                 line1 = "Code confirmed."
 
@@ -576,6 +586,7 @@ class Display:
     def draw_app_header(self, label: str):
         """Standard top bar: label at left, divider at y=11, status bar at right.
         Call after fill(0), before drawing content (which should start at y=14)."""
+        self._has_title_bar = True
         self.oled.text(label, 0, 2, 1)
         self.oled.hline(0, 11, self.oled.width, 1)
         self._draw_status_bar()
@@ -592,6 +603,7 @@ class Display:
                 self.temp_message_timer.cancel()
                 self.temp_message_timer = None
             self.display_data = {}
+            self._has_title_bar = False
             if self.hardware_available:
                 self.oled.fill(0)
                 self.oled.show()
@@ -622,6 +634,123 @@ class Display:
             self.wake()
         else:
             self.sleep()
+
+    def show_boot_loading(self):
+        """Animated ski-goggles boot icon: a single wide visor outline with
+        softly curved corners and a small nose notch in the bottom-middle.
+        An indeterminate progress sweep fills the visor interior left-to-right
+        then clears left-to-right, repeating.
+
+        Returns a callable that stops the animation and blanks the screen.
+        Safe to call without hardware — it just returns a no-op stop fn."""
+        if not self.hardware_available:
+            return lambda: None
+
+        import math
+        stop_event = Event()
+
+        W = self.oled.width
+        H = self.oled.height
+
+        left_x = 26
+        right_x = W - 1 - 26   # 101
+        top_y = H // 2 - 13    # 19
+        bot_y = H // 2 + 12    # 44
+        r = 5                  # corner radius
+        notch_cx = W // 2      # 64
+
+        def top_edge(x: int) -> int:
+            if left_x <= x <= left_x + r:
+                dx = x - (left_x + r)
+                return (top_y + r) - int(round(math.sqrt(max(0, r * r - dx * dx))))
+            if right_x - r <= x <= right_x:
+                dx = x - (right_x - r)
+                return (top_y + r) - int(round(math.sqrt(max(0, r * r - dx * dx))))
+            return top_y
+
+        def bot_edge(x: int) -> int:
+            if left_x <= x <= left_x + r:
+                dx = x - (left_x + r)
+                return (bot_y - r) + int(round(math.sqrt(max(0, r * r - dx * dx))))
+            if right_x - r <= x <= right_x:
+                dx = x - (right_x - r)
+                return (bot_y - r) + int(round(math.sqrt(max(0, r * r - dx * dx))))
+            dx = abs(x - notch_cx)
+            if dx <= 3:
+                return bot_y - 6
+            if dx == 4:
+                return bot_y - 4
+            if dx == 5:
+                return bot_y - 2
+            return bot_y
+
+        outline = set()
+        for x in range(left_x, right_x + 1):
+            outline.add((x, top_edge(x)))
+            outline.add((x, bot_edge(x)))
+        # Patch vertical jumps between adjacent columns so the outline stays 4-connected.
+        for x in range(left_x, right_x):
+            t0, t1 = top_edge(x), top_edge(x + 1)
+            for y in range(min(t0, t1), max(t0, t1) + 1):
+                outline.add((x + 1, y))
+            b0, b1 = bot_edge(x), bot_edge(x + 1)
+            for y in range(min(b0, b1), max(b0, b1) + 1):
+                outline.add((x + 1, y))
+        # Left/right side verticals close the shape.
+        for y in range(top_edge(left_x), bot_edge(left_x) + 1):
+            outline.add((left_x, y))
+        for y in range(top_edge(right_x), bot_edge(right_x) + 1):
+            outline.add((right_x, y))
+
+        fill_cols = []
+        col_ys = {}
+        for x in range(left_x + 1, right_x):
+            ys = list(range(top_edge(x) + 1, bot_edge(x)))
+            if ys:
+                fill_cols.append(x)
+                col_ys[x] = ys
+        fill_w = len(fill_cols)
+
+        def draw(step: int) -> None:
+            with self.display_lock:
+                if stop_event.is_set():
+                    return
+                self.oled.fill(0)
+                self._has_title_bar = False
+
+                for (px, py) in outline:
+                    self.oled.pixel(px, py, 1)
+
+                cycle = 2 * fill_w
+                k = step % cycle
+                active = fill_cols[:k] if k < fill_w else fill_cols[k - fill_w:]
+                for col in active:
+                    for y in col_ys[col]:
+                        self.oled.pixel(col, y, 1)
+
+                self.oled.show()
+
+        def animate():
+            step = 0
+            while True:
+                draw(step)
+                step += 2
+                if stop_event.wait(1 / 30):
+                    break
+
+        Thread(target=animate, daemon=True).start()
+
+        def stop():
+            stop_event.set()
+            try:
+                with self.display_lock:
+                    self.oled.fill(0)
+                    self._has_title_bar = False
+                    self.oled.show()
+            except Exception:
+                pass
+
+        return stop
     
     def get_display_data(self):
         """Get current display data"""

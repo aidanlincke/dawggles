@@ -24,16 +24,6 @@ CAMERA_CONFIG = {"size": (1280, 720)}
 NETWORK_INTERFACES = ("wlan0", "ap0", "uap0")
 
 
-def _show_boot_wait_screen(display: Display) -> None:
-    if not display or not getattr(display, "hardware_available", False):
-        return
-    with display.display_lock:
-        display.oled.fill(0)
-        display.oled.text("Starting up", 28, 20, 1)
-        display.oled.text("Waiting for network", 4, 32, 1)
-        display.oled.show()
-
-
 def _network_ready() -> bool:
     """Return True when hotspot/network interface has an IPv4 address."""
     try:
@@ -58,10 +48,13 @@ def _network_ready() -> bool:
 
 
 def _wait_for_network(shared: SharedClass) -> None:
-    """Show boot feedback and block until expected network interface is ready."""
-    _show_boot_wait_screen(shared.display)
-    while not _network_ready():
-        time.sleep(1)
+    """Show animated boot loader and block until the network interface is ready."""
+    stop_loader = shared.display.show_boot_loading() if shared.display else (lambda: None)
+    try:
+        while not _network_ready():
+            time.sleep(1)
+    finally:
+        stop_loader()
     logging.info("Network is ready.")
 
 
