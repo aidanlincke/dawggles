@@ -313,6 +313,27 @@ class DawgglesConnection: ObservableObject {
                     #if DEBUG
                     print("[LIVE] DawgglesConnection: preview JPEG #\(self.previewSeq) bytes=\(data.count)")
                     #endif
+                    
+                    #if DEBUG
+                    // Quick JPEG integrity check: SOI (FFD8) at start, EOI (FFD9) at end.
+                    // A missing EOI is a strong signal the frame was truncated mid-stream.
+                    let hasSOI: Bool = {
+                        guard data.count >= 2 else { return false }
+                        let p = data.prefix(2)
+                        return p[p.startIndex] == 0xFF && p[p.index(after: p.startIndex)] == 0xD8
+                    }()
+                    let hasEOI: Bool = {
+                        guard data.count >= 2 else { return false }
+                        let s = data.suffix(2)
+                        return s[s.startIndex] == 0xFF && s[s.index(after: s.startIndex)] == 0xD9
+                    }()
+                    if !hasSOI || !hasEOI {
+                        let first4 = data.prefix(4).map { String(format: "%02X", $0) }.joined(separator: " ")
+                        let last4 = data.suffix(4).map { String(format: "%02X", $0) }.joined(separator: " ")
+                        print("[LIVE] DawgglesConnection: ⚠︎ JPEG markers suspicious seq=\(self.previewSeq) SOI=\(hasSOI) EOI=\(hasEOI) first4=[\(first4)] last4=[\(last4)]")
+                    }
+                    #endif
+
                     if now - self.lastPreviewWall >= self.previewMinInterval,
                        let image = UIImage(data: data) {
                         self.lastPreviewWall = now
@@ -334,7 +355,7 @@ class DawgglesConnection: ObservableObject {
                         #endif
                     } else {
                         #if DEBUG
-                        print("[LIVE] DawgglesConnection: preview JPEG decode failed (bytes=\(data.count))")
+                        print("[LIVE] DawgglesConnection: preview JPEG decode failed (bytes=\(data.count)) seq=\(self.previewSeq)")
                         #endif
                     }
                 default:

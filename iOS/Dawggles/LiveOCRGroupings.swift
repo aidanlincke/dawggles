@@ -14,7 +14,7 @@ enum LiveOCRGroupings {
     private static let minimumObservationConfidence: Double = 0.5
     /// After band merge, drop a whole grouping whose **minimum** fragment confidence falls below this (typ. ≤ observation floor).
     private static let minimumMergedGroupingConfidence: Double = 0.45
-    /// Live preview OCR should be fast; downscale frames before Vision.
+    /// Live preview OCR can be expensive; downscale frames before Vision.
     private static let maxLiveOCRSide: CGFloat = 720
 
     /// OCR on-device; builds `groupings` for the Pi. `translated_text` holds source text until translation runs.
@@ -24,7 +24,7 @@ enum LiveOCRGroupings {
         guard let cgImage = scaled.cgImage else { return [] }
 
         let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .fast
+        request.recognitionLevel = .accurate
         // Reduces invented “words” from background texture vs language-correction on packaging/labels.
         request.usesLanguageCorrection = false
 

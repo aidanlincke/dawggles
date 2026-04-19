@@ -444,46 +444,41 @@ private struct PairedView: View {
                                         return CGRect(x: rx, y: ry, width: rw, height: rh)
                                     }
                                     
-                                    Canvas { context, size in
-                                        // --- DRAWING BLOCK ---
-                                        for (idx, grouping) in liveAlignment.liveDetectedGroupings.enumerated() {
-                                            if let x = grouping["x"] as? Double,
-                                               let y = grouping["y"] as? Double,
-                                               let w = grouping["w"] as? Double,
-                                               let h = grouping["h"] as? Double,
-                                               let text = grouping["translated_text"] as? String {
-                                                
-                                                guard !text.isEmpty else { continue }
-                                                guard let rect = visionRectToViewRect(x: x, y: y, w: w, h: h) else { continue }
-                                                
-                                                let path = Path(roundedRect: rect, cornerRadius: 4)
-                                                context.stroke(path, with: .color(.blue), lineWidth: 2)
-                                                
-                                                // If we have a translation, resolve the symbol tagged with this index
-                                                if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
-                                                    let anchor = CGPoint(x: rect.minX + 6, y: rect.minY + 6)
-                                                    
-                                                    // Use the index 'idx' to find the pre-rendered view
-                                                    if let resolvedLabel = context.resolveSymbol(id: idx) {
-                                                        context.draw(resolvedLabel, at: anchor, anchor: .topLeading)
-                                                    }
+                                    // --- DRAWING BLOCK ---
+                                    for (idx, grouping) in liveAlignment.liveDetectedGroupings.enumerated() {
+                                        if let x = grouping["x"] as? Double,
+                                           let y = grouping["y"] as? Double,
+                                           let w = grouping["w"] as? Double,
+                                           let h = grouping["h"] as? Double,
+                                           let text = grouping["translated_text"] as? String {
+                                            guard !text.isEmpty else { continue }
+                                            guard let rect = visionRectToViewRect(x: x, y: y, w: w, h: h) else { continue }
+                                            
+                                            let path = Path(roundedRect: rect, cornerRadius: 4)
+                                            context.stroke(path, with: .color(.blue), lineWidth: 2)
+                                            
+                                            // If we have a translation, resolve the symbol tagged with this index.
+                                            if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
+                                                let anchor = CGPoint(x: rect.minX + 6, y: rect.minY + 6)
+                                                if let resolvedLabel = context.resolveSymbol(id: idx) {
+                                                    context.draw(resolvedLabel, at: anchor, anchor: .topLeading)
                                                 }
                                             }
                                         }
-                                    } symbols: {
-                                        // --- SYMBOLS BLOCK ---
-                                        // Define the SwiftUI views here so the Canvas can "see" them
-                                        ForEach(Array(liveAlignment.liveDetectedGroupings.enumerated()), id: \.offset) { idx, grouping in
-                                            if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
-                                                Text(ui)
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.white)
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 3)
-                                                    .background(.black.opacity(0.75))
-                                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                                                    .tag(idx) // This tag links the view to 'resolveSymbol(id: idx)'
-                                            }
+                                    }
+                                } symbols: {
+                                    // --- SYMBOLS BLOCK ---
+                                    // Define the SwiftUI views here so the Canvas can "see" them.
+                                    ForEach(Array(liveAlignment.liveDetectedGroupings.enumerated()), id: \.offset) { idx, grouping in
+                                        if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
+                                            Text(ui)
+                                                .font(.caption2)
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 3)
+                                                .background(.black.opacity(0.75))
+                                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                                .tag(idx)
                                         }
                                     }
                                 }
