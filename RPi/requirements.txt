@@ -1,3 +1,8 @@
+# Raspberry Pi OS — install once before `pip install -r requirements.txt`:
+#   sudo apt install python3-venv python3-dev build-essential
+#   sudo apt install libcap-dev                                    # python-prctl (picamera2)
+#   sudo apt install libdbus-1-dev libglib2.0-dev pkg-config       # dbus-python
+
 # --- Display / GPIO stack (from prior lock / Adafruit) ---
 Adafruit-Blinka==8.69.0
 Adafruit-Blinka-Raspberry-Pi5-Neopixel==1.0.0rc2
@@ -27,3 +32,4 @@ websockets>=12.0
 # --- BLE peripheral (pairing) — may need BlueZ / dbus permissions ---
 bless>=0.2.6
 dbus-next>=0.2.0
+dbus-python>=1.3.2

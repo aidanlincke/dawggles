@@ -173,7 +173,7 @@ final class LiveAlignmentSession: ObservableObject {
 
         liveTranslateSeq += 1
         let seq = liveTranslateSeq
-        ImageTranslator.shared.enqueueLiveGroupings(merged) { [weak self] translatedOut in
+        ImageTranslator.shared.enqueueLiveGroupings(groupings: merged) { [weak self] translatedOut in
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard seq == self.liveTranslateSeq else { return }
