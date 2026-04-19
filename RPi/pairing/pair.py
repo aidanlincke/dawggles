@@ -12,6 +12,7 @@ System packages required (not pip):
     sudo apt install python3-dbus python3-gi
 """
 
+import signal
 import sys
 import threading
 import logging
@@ -437,7 +438,7 @@ def perform_unpair_and_restart(shared_class) -> None:
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
-def run_pairing_flow(display, confirm_button, cancel_button=None) -> bool:
+def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event=None) -> bool:
     """
     Advertise BLE as "Dawggles" and wait for an iPhone to complete pairing.
 
@@ -531,6 +532,16 @@ def run_pairing_flow(display, confirm_button, cancel_button=None) -> bool:
     set_adapter(bus, discoverable=True, pairable=True)
     display.show_pairing_waiting()
     log.info("BLE: discoverable — open the Dawggles app and tap 'Pair'")
+
+    def _quit_on_signal():
+        log.info("BLE: signal received, stopping pairing")
+        if shutdown_event is not None:
+            shutdown_event.set()
+        loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, _quit_on_signal)
+    GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, _quit_on_signal)
 
     try:
         loop.run()

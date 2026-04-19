@@ -7,20 +7,21 @@ Start the hotspot, then run:
 import logging
 import os
 import signal
+import threading
 import subprocess
 import time
 
 import dbus.mainloop.glib
 
-from goggles_lib import CameraClient, Display, GoggleButton, WebSocketServer, SharedClass
+from goggles_lib import Display, GoggleButton, WebSocketServer, SharedClass
 from home_screen import show_home_screen
 from pairing.pair import is_paired, run_pairing_flow
 
 _FORCE_PAIR_SENTINEL = "/tmp/dawggles_force_pair"
+_shutdown = threading.Event()
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-CAMERA_CONFIG = {"size": (1280, 720)}
 NETWORK_INTERFACES = ("wlan0", "ap0", "uap0")
 
 
@@ -51,7 +52,7 @@ def _wait_for_network(shared: SharedClass) -> None:
     """Show animated boot loader and block until the network interface is ready."""
     stop_loader = shared.display.show_boot_loading() if shared.display else (lambda: None)
     try:
-        while not _network_ready():
+        while not _network_ready() and not _shutdown.is_set():
             time.sleep(1)
     finally:
         stop_loader()
@@ -62,13 +63,7 @@ def main() -> None:
     # Must be called before any dbus.SystemBus() connection (pairing uses BlueZ).
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-    # systemctl stop sends SIGTERM, which by default kills us without running
-    # the KeyboardInterrupt cleanup below — leaving the last frame latched on
-    # the OLED. Translate SIGTERM into the same KeyboardInterrupt path so
-    # reset_display() always runs on shutdown.
-    def _term(_signum, _frame):
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, _term)
+    signal.signal(signal.SIGTERM, lambda *_: _shutdown.set())
 
     # PiSugar custom button → SIGUSR1 → toggle display sleep. The display is
     # blanked via SSD1306 poweroff (buffer preserved) and button input is
@@ -117,21 +112,18 @@ def main() -> None:
 
     if force_pair or not is_paired():
         logging.info("Starting pairing flow%s.", " (forced after unpair)" if force_pair else "")
-        run_pairing_flow(shared.display, shared.button, shared.cycle_button)
+        run_pairing_flow(shared.display, shared.button, shared.cycle_button, shutdown_event=_shutdown)
         # run_pairing_flow blocks until the device is paired (or a fatal BLE
         # error occurs).  Either way we continue; the WebSocket handshake will
         # surface any remaining issues.
 
     # ── Normal startup ────────────────────────────────────────────────────────
-    shared.camera_client = CameraClient(shared, CAMERA_CONFIG)
-
-    shared.display.reset_display()
-
-    show_home_screen(shared)
+    if not _shutdown.is_set():
+        shared.display.reset_display()
+        show_home_screen(shared)
 
     try:
-        while True:
-            time.sleep(1)
+        _shutdown.wait()
     except KeyboardInterrupt:
         pass
     finally:
@@ -144,10 +136,9 @@ def main() -> None:
             except Exception:
                 pass
             if shared.camera_client.camera:
-                try:
-                    shared.camera_client.camera.stop()
-                except Exception:
-                    pass
+                t = threading.Thread(target=shared.camera_client.camera.stop, daemon=True)
+                t.start()
+                t.join(timeout=5)
         if shared.display:
             try:
                 shared.display.reset_display()

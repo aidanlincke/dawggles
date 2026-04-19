@@ -7,12 +7,17 @@ from apps.gps_app import GPSApp
 from apps.live_captions_app import LiveCaptionsApp
 from apps.settings_app import SettingsApp
 from apps.translation_app import TranslationApp
+from goggles_lib import CameraClient
+
+_CAMERA_CONFIG = {"size": (1280, 720)}
 
 _APPS = {}
 _current_app_instance = None
 
 def initialize_apps(shared_class):
     global _APPS
+    if shared_class.camera_client is None:
+        shared_class.camera_client = CameraClient(shared_class, _CAMERA_CONFIG)
     _APPS["translation"] = TranslationApp(shared_class)
     _APPS["gps"] = GPSApp(shared_class)
     _APPS["live_captions"] = LiveCaptionsApp(shared_class)
