@@ -7,6 +7,7 @@ import Combine
 import Foundation
 import UIKit
 import Vision
+import CoreFoundation
 
 struct TranslationBlock {
     var text: String
@@ -33,7 +34,37 @@ class ImageTranslator: ObservableObject {
     private var queuedLiveGroupings: [[String: Any]]?
     private var queuedCompletion: (([[String: Any]]) -> Void)?
 
+    private var liveTranslationStartWall: CFAbsoluteTime = 0
+    private let translationStuckTimeout: CFTimeInterval = 10.0
+
+    private let liveCacheQueue = DispatchQueue(label: "ImageTranslator.liveTranslationCache")
+    private var liveTranslationCache: [String: String] = [:]
+
     private init() {}
+
+    func clearLiveTranslationCache() {
+        liveCacheQueue.async { [weak self] in
+            self?.liveTranslationCache.removeAll()
+        }
+    }
+
+    func cachedLiveTranslation(for key: String) -> String? {
+        let k = Self.normalizeLiveCacheKey(key)
+        return liveCacheQueue.sync { liveTranslationCache[k] }
+    }
+
+    func storeLiveTranslation(_ value: String, for key: String) {
+        let k = Self.normalizeLiveCacheKey(key)
+        liveCacheQueue.async { [weak self] in
+            self?.liveTranslationCache[k] = value
+        }
+    }
+    
+    private static func normalizeLiveCacheKey(_ s: String) -> String {
+        let folded = s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        let parts = folded.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+        return parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     // MARK: - Still photo: OCR + block grouping
 
@@ -112,17 +143,44 @@ class ImageTranslator: ObservableObject {
 
     func enqueueLiveGroupings(groupings: [[String: Any]], completion: @escaping ([[String: Any]]) -> Void) {
         if isTranslating {
+            let now = CFAbsoluteTimeGetCurrent()
+            if liveTranslationStartWall > 0, now - liveTranslationStartWall > translationStuckTimeout {
+                print("ImageTranslator: live translation watchdog tripped (>\(translationStuckTimeout)s); resetting")
+                DebugLog.live("ImageTranslator: watchdog reset after \(String(format: \"%.2f\", now - liveTranslationStartWall))s")
+                isTranslating = false
+                pendingLiveGroupingsCompletion = nil
+                queuedLiveGroupings = nil
+                queuedCompletion = nil
+            } else {
             print("ImageTranslator: translation in progress, queuing batch")
+            DebugLog.live("ImageTranslator: queueing translation rows=\(groupings.count)")
             queuedLiveGroupings = groupings
             queuedCompletion = completion
             return
+            }
         }
         
         pendingLiveGroupingsCompletion = completion
         liveGroupingsToTranslate = groupings
         triggerCount += 1
         isTranslating = true
+        liveTranslationStartWall = CFAbsoluteTimeGetCurrent()
         print("ImageTranslator: enqueueLiveGroupings #\(triggerCount) with \(groupings.count) items — STARTING TRANSLATION")
+        DebugLog.live("ImageTranslator: START live translate #\(triggerCount) rows=\(groupings.count)")
+        liveTranslationTrigger = UUID()
+    }
+
+    /// Allows callers (e.g. Pi->phone JSON) to trigger a translation batch without a completion callback.
+    /// The translated rows will still be published to `liveTranslatedGroupings` and `isTranslating` will be reset.
+    func beginExternalLiveGroupingsTranslation(groupings: [[String: Any]]) {
+        if isTranslating { return }
+        pendingLiveGroupingsCompletion = nil
+        liveGroupingsToTranslate = groupings
+        triggerCount += 1
+        isTranslating = true
+        liveTranslationStartWall = CFAbsoluteTimeGetCurrent()
+        print("ImageTranslator: beginExternalLiveGroupingsTranslation #\(triggerCount) with \(groupings.count) items")
+        DebugLog.live("ImageTranslator: START external live translate #\(triggerCount) rows=\(groupings.count)")
         liveTranslationTrigger = UUID()
     }
 
@@ -137,6 +195,8 @@ class ImageTranslator: ObservableObject {
     func completeLiveTranslation(translatedGroupings: [[String: Any]]) {
         print("ImageTranslator: completeLiveTranslation with \(translatedGroupings.count) items")
         isTranslating = false
+        liveTranslationStartWall = 0
+        DebugLog.live("ImageTranslator: COMPLETE live translate rows=\(translatedGroupings.count)")
         pendingLiveGroupingsCompletion?(translatedGroupings)
         pendingLiveGroupingsCompletion = nil
         liveGroupingsToTranslate = []

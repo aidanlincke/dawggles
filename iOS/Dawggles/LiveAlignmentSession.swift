@@ -38,9 +38,9 @@ private struct IndexHysteresis {
 }
 
 final class LiveAlignmentSession: ObservableObject {
-    @Published private(set) var lastSentIndex: Int?
-    /// `translated_text` for the grouping at `lastSentIndex`.
-    @Published private(set) var lastSentROIText: String?
+    // ROI/focus selection removed for debugging/simplicity.
+    @Published private(set) var lastSentIndex: Int? = nil
+    @Published private(set) var lastSentROIText: String? = nil
     /// Latest detected live OCR groupings (Vision-normalized coords). Use this for drawing live boxes so
     /// they appear/disappear with detection, independent of translation lag.
     @Published private(set) var liveDetectedGroupings: [[String: Any]] = []
@@ -48,8 +48,6 @@ final class LiveAlignmentSession: ObservableObject {
     private weak var connection: DawgglesConnection?
     private var latestLiveFrame: UIImage?
     private var tick: AnyCancellable?
-    private var hysteresis = IndexHysteresis(consecutiveTicksRequired: 4)
-    private var lastCommittedIndex: Int?
     private var consecutiveAlignmentMisses = 0
     private let alignmentMissesBeforeHysteresisReset = 8
     private var consecutiveEmptyGroupings = 0
@@ -59,36 +57,30 @@ final class LiveAlignmentSession: ObservableObject {
     private let liveOCRMinInterval: CFTimeInterval = 0.28
     private var ocrSeq: Int = 0
 
-    /// Running merge of OCR lines; prefers higher-confidence / stable readings per band index.
-    private var committedGroupings: [[String: Any]]?
-    /// Last snapshot actually sent to the Pi (for focus-only updates).
+    /// Last snapshot actually sent to the Pi.
     private var lastPiFingerprint: String?
-    private var lastPiActive: Int?
-    /// Last **translated** groupings sent to the Pi (used for ROI label when only `focus` is sent).
     private var lastTranslatedGroupings: [[String: Any]]?
     private var liveTranslateSeq: Int = 0
     private var lastUIFingerprint: String?
     private var lastTranslationEnqueueWall: CFAbsoluteTime = 0
     private let translationMinInterval: CFTimeInterval = 0.85
+    private var lastEnqueuedOCRFingerprint: String?
 
     func disarm() {
+        DebugLog.live("LiveAlignment: disarm()")
         tick?.cancel()
         tick = nil
         connection = nil
         latestLiveFrame = nil
-        hysteresis.reset()
         consecutiveAlignmentMisses = 0
         consecutiveEmptyGroupings = 0
         lastLiveOCRTime = 0
         ocrSeq = 0
-        lastCommittedIndex = nil
         lastSentIndex = nil
         lastSentROIText = nil
         liveDetectedGroupings = []
         lastUIFingerprint = nil
-        committedGroupings = nil
         lastPiFingerprint = nil
-        lastPiActive = nil
         lastTranslatedGroupings = nil
         liveTranslateSeq = 0
         lastTranslationEnqueueWall = 0
@@ -98,6 +90,7 @@ final class LiveAlignmentSession: ObservableObject {
     func arm(connection: DawgglesConnection) {
         disarm()
         self.connection = connection
+        DebugLog.live("LiveAlignment: arm() -> starting OCR timer")
 
         tick = Timer.publish(every: 1.0 / 10.0, on: .main, in: .common)
             .autoconnect()
@@ -122,10 +115,12 @@ final class LiveAlignmentSession: ObservableObject {
         let image = live
         ocrSeq += 1
         let seq = ocrSeq
+        DebugLog.live("LiveAlignment: OCR start seq=\(seq)")
         DispatchQueue.global(qos: .userInitiated).async {
             let g = LiveOCRGroupings.buildGroupings(from: image)
             DispatchQueue.main.async { [weak self] in
                 guard let self, seq == self.ocrSeq else { return }
+                DebugLog.live("LiveAlignment: OCR done seq=\(seq) groupings=\(g.count)")
                 self.handleLiveOCR(groupings: g, connection: conn)
             }
         }
@@ -136,7 +131,6 @@ final class LiveAlignmentSession: ObservableObject {
             consecutiveAlignmentMisses += 1
             consecutiveEmptyGroupings += 1
             if consecutiveAlignmentMisses >= alignmentMissesBeforeHysteresisReset {
-                hysteresis.reset()
                 consecutiveAlignmentMisses = 0
             }
             if consecutiveEmptyGroupings >= emptyGroupingsClearThreshold {
@@ -144,21 +138,31 @@ final class LiveAlignmentSession: ObservableObject {
                 liveDetectedGroupings = []
                 lastSentIndex = nil
                 lastSentROIText = nil
-                committedGroupings = nil
-                lastCommittedIndex = nil
                 lastUIFingerprint = nil
+                DebugLog.live("LiveAlignment: cleared live boxes (empty streak=\(consecutiveEmptyGroupings))")
             }
             return
         }
         consecutiveAlignmentMisses = 0
         consecutiveEmptyGroupings = 0
 
-        let merged = Self.mergeCommittedWithNew(previous: committedGroupings, new: raw)
-        committedGroupings = merged
+        // Debug simplification: use raw Vision observations directly (no merge, no ROI selection).
+        // For UI, attach `ui_text` when we already have a cached translation.
+        let translator = ImageTranslator.shared
+        let groupings: [[String: Any]] = raw.map { d in
+            var m = d
+            let src = (d["translated_text"] as? String) ?? ""
+            if let cached = translator.cachedLiveTranslation(for: src),
+               !cached.isEmpty,
+               cached != src {
+                m["ui_text"] = cached
+            }
+            return m
+        }
         
         // Update live UI groupings (boxes) even if translation is pending.
         // Skip publishing if unchanged to avoid unnecessary SwiftUI redraws.
-        let uiFingerprint = merged.compactMap {
+        let uiFingerprint = groupings.compactMap {
             let x = ($0["x"] as? Double) ?? 0
             let y = ($0["y"] as? Double) ?? 0
             let w = ($0["w"] as? Double) ?? 0
@@ -167,45 +171,38 @@ final class LiveAlignmentSession: ObservableObject {
             return "\(String(format: "%.3f", x)),\(String(format: "%.3f", y)),\(String(format: "%.3f", w)),\(String(format: "%.3f", h)):\(t)"
         }.joined(separator: "\u{1f}")
         if uiFingerprint != lastUIFingerprint {
-            liveDetectedGroupings = merged
+            liveDetectedGroupings = groupings
             lastUIFingerprint = uiFingerprint
+            DebugLog.live("LiveAlignment: UI boxes updated count=\(groupings.count)")
         }
 
-        let parsed = merged.enumerated().compactMap { i, d in TranslationGrouping(dictionary: d, arrayIndex: i) }
-        guard !parsed.isEmpty else { return }
-
-        let nearest = LiveOCRGroupings.indexOfGroupingNearestNormalizedCenter(merged)
-        let clampedNearest = min(max(0, nearest), merged.count - 1)
-
-        if lastCommittedIndex == nil {
-            lastCommittedIndex = clampedNearest
-            hysteresis.reset()
-        } else if clampedNearest == lastCommittedIndex {
-            hysteresis.reset()
-        } else if hysteresis.shouldCommit(clampedNearest) {
-            lastCommittedIndex = clampedNearest
-            hysteresis.reset()
+        func normalizeForFingerprint(_ s: String) -> String {
+            let folded = s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            let parts = folded.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+            return parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         }
-
-        let active = lastCommittedIndex ?? clampedNearest
-        let safeActive = min(max(0, active), merged.count - 1)
-
-        let fingerprint = Self.groupingTextsFingerprint(merged)
-        if fingerprint == lastPiFingerprint, safeActive == lastPiActive {
+        let fingerprint = groupings
+            .map { normalizeForFingerprint(($0["translated_text"] as? String) ?? "") }
+            .joined(separator: "\u{1e}")
+        if fingerprint == lastPiFingerprint {
             return
         }
 
-        if fingerprint == lastPiFingerprint, safeActive != lastPiActive {
-            conn.sendActiveGroupingIndex(safeActive)
-            lastPiActive = safeActive
-            lastSentIndex = safeActive
-            let label: String
-            if let lg = lastTranslatedGroupings, safeActive >= 0, safeActive < lg.count {
-                label = (lg[safeActive]["translated_text"] as? String) ?? ""
-            } else {
-                label = (merged[safeActive]["translated_text"] as? String) ?? ""
-            }
-            lastSentROIText = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : label
+        // Only enqueue translation if there are cache misses.
+        let cacheMisses = groupings.reduce(into: 0) { acc, d in
+            let src = (d["translated_text"] as? String) ?? ""
+            if src.isEmpty { return }
+            if translator.cachedLiveTranslation(for: src) == nil { acc += 1 }
+        }
+        if cacheMisses == 0 {
+            DebugLog.live("LiveAlignment: no translation work (all cache hits)")
+            lastPiFingerprint = fingerprint
+            return
+        }
+        
+        // If OCR text is effectively unchanged from the last translation request, don't enqueue again.
+        if fingerprint == lastEnqueuedOCRFingerprint {
+            DebugLog.live("LiveAlignment: skip enqueue (OCR text unchanged from last request)")
             return
         }
 
@@ -214,29 +211,27 @@ final class LiveAlignmentSession: ObservableObject {
         let now = CFAbsoluteTimeGetCurrent()
         if now - lastTranslationEnqueueWall < translationMinInterval {
             // Don’t spam translations if OCR jitter causes frequent text changes.
+            DebugLog.live("LiveAlignment: translation debounced (Δt=\(String(format: \"%.2f\", now - lastTranslationEnqueueWall))s)")
             return
         }
         lastTranslationEnqueueWall = now
-        ImageTranslator.shared.enqueueLiveGroupings(groupings: merged) { [weak self] translatedOut in
+        lastEnqueuedOCRFingerprint = fingerprint
+        DebugLog.live("LiveAlignment: enqueue translate seq=\(seq) rows=\(groupings.count)")
+        ImageTranslator.shared.enqueueLiveGroupings(groupings: groupings) { [weak self] translatedOut in
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard seq == self.liveTranslateSeq else { return }
                 guard let conn = self.connection, conn.isConnected else { return }
 
                 let summary = translatedOut.compactMap { $0["translated_text"] as? String }.joined(separator: " ")
-                conn.sendTranslationPayload(data: summary, groupings: translatedOut, activeIdx: safeActive)
+                // No ROI/focus selection: Pi will default to index 0 if it wants to show a single line.
+                conn.sendTranslationPayload(data: summary, groupings: translatedOut, activeIdx: 0)
                 self.lastPiFingerprint = fingerprint
-                self.lastPiActive = safeActive
                 self.lastTranslatedGroupings = translatedOut
-                self.lastSentIndex = safeActive
-                let label = (translatedOut[safeActive]["translated_text"] as? String) ?? ""
-                self.lastSentROIText = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : label
+                self.lastSentIndex = nil
+                self.lastSentROIText = nil
+                DebugLog.live("LiveAlignment: translate complete seq=\(seq)")
 
-                if let t = self.lastSentROIText, !t.isEmpty {
-                    print("LiveAlignment: ROI \(safeActive) (nearest-center) — \(t)")
-                } else {
-                    print("LiveAlignment: ROI \(safeActive) (nearest-center) — (no text)")
-                }
             }
         }
     }

@@ -56,11 +56,16 @@ enum LiveOCRGroupings {
                 "recognition_confidence": conf,
             ])
         }
-        let merged = mergeLinesReadingOrder(rows)
-        if merged.isEmpty, !rows.isEmpty {
-            return rows
+        
+        // Debug simplification: do NOT merge/cluster—use Apple/Vision’s raw observations as-is.
+        // Sort into approximate reading order (top-to-bottom, then left-to-right).
+        rows.sort { a, b in
+            let ay = doubleField(a["y"]) + doubleField(a["h"])
+            let by = doubleField(b["y"]) + doubleField(b["h"])
+            if abs(ay - by) > 0.015 { return ay > by }
+            return doubleField(a["x"]) < doubleField(b["x"])
         }
-        return merged
+        return rows
     }
 
     /// Vision-normalized space (origin bottom-left). Image center is `(0.5, 0.5)`.

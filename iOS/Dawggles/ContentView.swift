@@ -14,8 +14,8 @@ class TranslationSettings: ObservableObject {
     static let availableLanguages = ["Auto", "English", "Spanish", "Chinese", "French", "German", "Japanese", "Korean"]
     static let languageCodes = ["", "en", "es", "zh", "fr", "de", "ja", "ko"]
     
-    @Published var selectedSourceIndex = 3 // Chinese
-    @Published var selectedTargetIndex = 1 // English
+    @Published var selectedSourceIndex = 1 // English
+    @Published var selectedTargetIndex = 2 // Spanish
     
     var sourceLanguage: Locale.Language? {
         selectedSourceIndex == 0 ? nil : Locale.Language(identifier: Self.languageCodes[selectedSourceIndex])
@@ -68,52 +68,51 @@ private struct TranslationViewModifier: ViewModifier {
     @ObservedObject var settings: TranslationSettings
     @State private var configuration: TranslationSession.Configuration?
 
+    private func makeConfiguration() -> TranslationSession.Configuration {
+        TranslationSession.Configuration(
+            source: settings.sourceLanguage,
+            target: settings.targetLanguage,
+            preferredStrategy: .lowLatency
+        )
+    }
+
     func body(content: Content) -> some View {
         content
             .onChange(of: settings.selectedSourceIndex) {
-                configuration = nil
+                translator.clearLiveTranslationCache()
                 let sourceCode = $0 == 0 ? "auto" : TranslationSettings.languageCodes[$0]
                 print("TranslationViewModifier: source changed to \(sourceCode)")
+                configuration = makeConfiguration()
             }
             .onChange(of: settings.selectedTargetIndex) {
-                configuration = nil
+                translator.clearLiveTranslationCache()
                 let targetCode = TranslationSettings.languageCodes[$0]
                 print("TranslationViewModifier: target changed to \(targetCode)")
+                configuration = makeConfiguration()
             }
             .onChange(of: translator.translationTrigger) {
-                // Force `translationTask` to re-run even when source/target stay the same.
-                // (SwiftUI may ignore same-value `Configuration` assignments.)
-                let next = TranslationSession.Configuration(
-                    source: settings.sourceLanguage,
-                    target: settings.targetLanguage,
-                    preferredStrategy: .lowLatency
-                )
-                configuration = nil
-                Task { @MainActor in
-                    await Task.yield()
-                    configuration = next
+                if configuration == nil {
+                    configuration = makeConfiguration()
+                } else {
+                    configuration?.invalidate()
                 }
                 let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
                 let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
                 print("TranslationViewModifier: starting translation with source=\(sourceCode) target=\(targetCode)")
             }
             .onChange(of: translator.liveTranslationTrigger) {
-                let next = TranslationSession.Configuration(
-                    source: settings.sourceLanguage,
-                    target: settings.targetLanguage,
-                    preferredStrategy: .lowLatency
-                )
-                configuration = nil
-                Task { @MainActor in
-                    await Task.yield()
-                    configuration = next
+                if configuration == nil {
+                    configuration = makeConfiguration()
+                } else {
+                    configuration?.invalidate()
                 }
                 let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
                 let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
                 print("TranslationViewModifier: starting live translation with source=\(sourceCode) target=\(targetCode)")
             }
             .translationTask(configuration) { session in
-                print("TranslationViewModifier: translationTask triggered [#\(self.translator.triggerCount)]")
+                DebugLog.live("TranslationTask: triggered (#\(self.translator.triggerCount))")
+                let taskStart = CFAbsoluteTimeGetCurrent()
                 let blocks = translator.blocksToTranslate
                 print("TranslationViewModifier: blocksToTranslate count=\(blocks.count)")
                 if !blocks.isEmpty {
@@ -121,7 +120,10 @@ private struct TranslationViewModifier: ViewModifier {
                     do {
                         for block in blocks {
                             print("TranslationViewModifier: translating block text=\(block.text)")
+                            let t0 = CFAbsoluteTimeGetCurrent()
                             let response = try await session.translate(block.text)
+                            let dt = CFAbsoluteTimeGetCurrent() - t0
+                            DebugLog.live("TranslationTask: still translate dt=\(String(format: \"%.2f\", dt))s chars=\(block.text.count)")
                             print("TranslationViewModifier: block translated=\(response.targetText)")
                             var b = block
                             b.translatedText = response.targetText
@@ -134,37 +136,56 @@ private struct TranslationViewModifier: ViewModifier {
                         let fallback = settings.selectedSourceIndex == 0 ? "Could not detect language" : "Translation unavailable"
                         let modifiedBlocks = blocks.map { var b = $0; b.translatedText = fallback; return b }
                         translator.completeTranslation(translatedBlocks: modifiedBlocks)
+                        DebugLog.live("TranslationTask: still translate FAILED domain=\(nsError.domain) code=\(nsError.code)")
                     }
+                    DebugLog.live("TranslationTask: still complete totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s")
                     return
                 }
 
                 let live = translator.liveGroupingsToTranslate
-                print("TranslationViewModifier: translationTask processing [#\(self.translator.triggerCount)] with \(live.count) items")
+                DebugLog.live("TranslationTask: live processing rows=\(live.count)")
                 guard !live.isEmpty else {
                     print("TranslationViewModifier: no live groupings, marking complete")
                     translator.completeLiveTranslation(translatedGroupings: [])
+                    DebugLog.live("TranslationTask: live complete (empty)")
                     return
                 }
 
                 var out: [[String: Any]] = []
                 do {
+                    var cacheHits = 0
+                    var cacheMisses = 0
                     for row in live {
                         var m = row
                         let src = (m["translated_text"] as? String) ?? ""
-                        print("TranslationViewModifier: translating live source=\(src)")
-                        let response = try await session.translate(src)
-                        print("TranslationViewModifier: live translated=\(response.targetText)")
-                        m["translated_text"] = response.targetText
+                        if let cached = translator.cachedLiveTranslation(for: src), !cached.isEmpty {
+                            m["translated_text"] = cached
+                            cacheHits += 1
+                        } else {
+                            print("TranslationViewModifier: translating live source=\(src)")
+                            let t0 = CFAbsoluteTimeGetCurrent()
+                            let response = try await session.translate(src)
+                            let dt = CFAbsoluteTimeGetCurrent() - t0
+                            if dt >= 1.0 {
+                                DebugLog.live("TranslationTask: live translate SLOW dt=\(String(format: \"%.2f\", dt))s chars=\(src.count)")
+                            }
+                            print("TranslationViewModifier: live translated=\(response.targetText)")
+                            translator.storeLiveTranslation(response.targetText, for: src)
+                            m["translated_text"] = response.targetText
+                            cacheMisses += 1
+                        }
                         out.append(m)
                     }
                     print("TranslationViewModifier: ✓ translation batch complete [#\(self.translator.triggerCount)]")
                     translator.completeLiveTranslation(translatedGroupings: out)
+                    DebugLog.live("TranslationTask: live complete totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s hits=\(cacheHits) misses=\(cacheMisses)")
                 } catch {
                     let nsError = error as NSError
                     print("TranslationViewModifier: ✗ live translation failed — \(error) domain=\(nsError.domain) code=\(nsError.code) desc=\(nsError.localizedDescription)")
                     let fallback = settings.selectedSourceIndex == 0 ? "Could not detect language" : "Translation unavailable"
                     let modifiedLive = live.map { var m = $0; m["translated_text"] = fallback; return m }
                     translator.completeLiveTranslation(translatedGroupings: modifiedLive)
+                    DebugLog.live("TranslationTask: live FAILED totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s domain=\(nsError.domain) code=\(nsError.code)")
                 }
             }
     }
@@ -395,27 +416,29 @@ private struct PairedView: View {
                                            let text = grouping["translated_text"] as? String {
                                             guard !text.isEmpty else { continue }
                                             guard let rect = visionRectToViewRect(x: x, y: y, w: w, h: h) else { continue }
-                                            let isActive = idx == liveAlignment.lastSentIndex
                                             var path = Path(roundedRect: rect, cornerRadius: 4)
-                                            context.stroke(path, with: .color(isActive ? .green : .blue), lineWidth: 2)
+                                            context.stroke(path, with: .color(.blue), lineWidth: 2)
+                                            
+                                            // If we already have a translation for this box, draw it.
+                                            if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
+                                                let anchor = CGPoint(x: rect.minX + 6, y: rect.minY + 6)
+                                                context.draw(
+                                                    Text(ui)
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.white)
+                                                        .padding(.horizontal, 6)
+                                                        .padding(.vertical, 3)
+                                                        .background(.black.opacity(0.75))
+                                                        .clipShape(RoundedRectangle(cornerRadius: 6)),
+                                                    at: anchor,
+                                                    anchor: .topLeading
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
                             .clipShape(RoundedRectangle(cornerRadius: 12))
-                            if let idx = liveAlignment.lastSentIndex {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Active ROI: \(idx)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                    if let roiText = liveAlignment.lastSentROIText {
-                                        Text(roiText)
-                                            .font(.caption)
-                                            .foregroundStyle(.primary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
-                            }
                         }
                     }
                 }
