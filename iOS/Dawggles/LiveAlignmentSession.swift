@@ -207,7 +207,7 @@ final class LiveAlignmentSession: ObservableObject {
                 let h = (d["h"] as? Double) ?? 0
                 let c = (d["recognition_confidence"] as? Double) ?? 0
                 if t.isEmpty { return nil }
-                return "«\(t.prefix(48))» box=\(String(format: \"%.3f\", x)),\(String(format: \"%.3f\", y)),\(String(format: \"%.3f\", w)),\(String(format: \"%.3f\", h)) conf=\(String(format: \"%.2f\", c))"
+                return #"«\(t.prefix(48))» box=\(String(format: \"%.3f\", x)),\(String(format: \"%.3f\", y)),\(String(format: \"%.3f\", w)),\(String(format: \"%.3f\", h)) conf=\(String(format: \"%.2f\", c))"#
             }
             if !sample.isEmpty {
                 print("[LIVE] LiveAlignment: OCR sample: \(sample.joined(separator: " | "))")
@@ -282,7 +282,7 @@ final class LiveAlignmentSession: ObservableObject {
         if now - lastTranslationEnqueueWall < translationMinInterval {
             // Don’t spam translations if OCR jitter causes frequent text changes.
             #if DEBUG
-            print("[LIVE] LiveAlignment: translation debounced (Δt=\(String(format: \"%.2f\", now - lastTranslationEnqueueWall))s)")
+            print(#"[LIVE] LiveAlignment: translation debounced (Δt=\(String(format: "%.2f", now - lastTranslationEnqueueWall))s)"#)
             #endif
             return
         }
