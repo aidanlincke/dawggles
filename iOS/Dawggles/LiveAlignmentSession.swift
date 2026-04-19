@@ -67,7 +67,6 @@ final class LiveAlignmentSession: ObservableObject {
     private var lastEnqueuedOCRFingerprint: String?
 
     func disarm() {
-        DebugLog.live("LiveAlignment: disarm()")
         tick?.cancel()
         tick = nil
         connection = nil
@@ -90,7 +89,6 @@ final class LiveAlignmentSession: ObservableObject {
     func arm(connection: DawgglesConnection) {
         disarm()
         self.connection = connection
-        DebugLog.live("LiveAlignment: arm() -> starting OCR timer")
 
         tick = Timer.publish(every: 1.0 / 10.0, on: .main, in: .common)
             .autoconnect()
@@ -115,12 +113,10 @@ final class LiveAlignmentSession: ObservableObject {
         let image = live
         ocrSeq += 1
         let seq = ocrSeq
-        DebugLog.live("LiveAlignment: OCR start seq=\(seq)")
         DispatchQueue.global(qos: .userInitiated).async {
             let g = LiveOCRGroupings.buildGroupings(from: image)
             DispatchQueue.main.async { [weak self] in
                 guard let self, seq == self.ocrSeq else { return }
-                DebugLog.live("LiveAlignment: OCR done seq=\(seq) groupings=\(g.count)")
                 self.handleLiveOCR(groupings: g, connection: conn)
             }
         }
@@ -139,7 +135,6 @@ final class LiveAlignmentSession: ObservableObject {
                 lastSentIndex = nil
                 lastSentROIText = nil
                 lastUIFingerprint = nil
-                DebugLog.live("LiveAlignment: cleared live boxes (empty streak=\(consecutiveEmptyGroupings))")
             }
             return
         }
@@ -173,7 +168,6 @@ final class LiveAlignmentSession: ObservableObject {
         if uiFingerprint != lastUIFingerprint {
             liveDetectedGroupings = groupings
             lastUIFingerprint = uiFingerprint
-            DebugLog.live("LiveAlignment: UI boxes updated count=\(groupings.count)")
         }
 
         func normalizeForFingerprint(_ s: String) -> String {
@@ -195,14 +189,12 @@ final class LiveAlignmentSession: ObservableObject {
             if translator.cachedLiveTranslation(for: src) == nil { acc += 1 }
         }
         if cacheMisses == 0 {
-            DebugLog.live("LiveAlignment: no translation work (all cache hits)")
             lastPiFingerprint = fingerprint
             return
         }
         
         // If OCR text is effectively unchanged from the last translation request, don't enqueue again.
         if fingerprint == lastEnqueuedOCRFingerprint {
-            DebugLog.live("LiveAlignment: skip enqueue (OCR text unchanged from last request)")
             return
         }
 
@@ -211,12 +203,10 @@ final class LiveAlignmentSession: ObservableObject {
         let now = CFAbsoluteTimeGetCurrent()
         if now - lastTranslationEnqueueWall < translationMinInterval {
             // Don’t spam translations if OCR jitter causes frequent text changes.
-            DebugLog.live("LiveAlignment: translation debounced (Δt=\(String(format: \"%.2f\", now - lastTranslationEnqueueWall))s)")
             return
         }
         lastTranslationEnqueueWall = now
         lastEnqueuedOCRFingerprint = fingerprint
-        DebugLog.live("LiveAlignment: enqueue translate seq=\(seq) rows=\(groupings.count)")
         ImageTranslator.shared.enqueueLiveGroupings(groupings: groupings) { [weak self] translatedOut in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -230,7 +220,6 @@ final class LiveAlignmentSession: ObservableObject {
                 self.lastTranslatedGroupings = translatedOut
                 self.lastSentIndex = nil
                 self.lastSentROIText = nil
-                DebugLog.live("LiveAlignment: translate complete seq=\(seq)")
 
             }
         }

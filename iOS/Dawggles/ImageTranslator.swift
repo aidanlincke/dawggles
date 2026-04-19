@@ -146,14 +146,12 @@ class ImageTranslator: ObservableObject {
             let now = CFAbsoluteTimeGetCurrent()
             if liveTranslationStartWall > 0, now - liveTranslationStartWall > translationStuckTimeout {
                 print("ImageTranslator: live translation watchdog tripped (>\(translationStuckTimeout)s); resetting")
-                DebugLog.live("ImageTranslator: watchdog reset after \(String(format: \"%.2f\", now - liveTranslationStartWall))s")
                 isTranslating = false
                 pendingLiveGroupingsCompletion = nil
                 queuedLiveGroupings = nil
                 queuedCompletion = nil
             } else {
             print("ImageTranslator: translation in progress, queuing batch")
-            DebugLog.live("ImageTranslator: queueing translation rows=\(groupings.count)")
             queuedLiveGroupings = groupings
             queuedCompletion = completion
             return
@@ -166,7 +164,6 @@ class ImageTranslator: ObservableObject {
         isTranslating = true
         liveTranslationStartWall = CFAbsoluteTimeGetCurrent()
         print("ImageTranslator: enqueueLiveGroupings #\(triggerCount) with \(groupings.count) items — STARTING TRANSLATION")
-        DebugLog.live("ImageTranslator: START live translate #\(triggerCount) rows=\(groupings.count)")
         liveTranslationTrigger = UUID()
     }
 
@@ -180,7 +177,6 @@ class ImageTranslator: ObservableObject {
         isTranslating = true
         liveTranslationStartWall = CFAbsoluteTimeGetCurrent()
         print("ImageTranslator: beginExternalLiveGroupingsTranslation #\(triggerCount) with \(groupings.count) items")
-        DebugLog.live("ImageTranslator: START external live translate #\(triggerCount) rows=\(groupings.count)")
         liveTranslationTrigger = UUID()
     }
 
@@ -196,7 +192,6 @@ class ImageTranslator: ObservableObject {
         print("ImageTranslator: completeLiveTranslation with \(translatedGroupings.count) items")
         isTranslating = false
         liveTranslationStartWall = 0
-        DebugLog.live("ImageTranslator: COMPLETE live translate rows=\(translatedGroupings.count)")
         pendingLiveGroupingsCompletion?(translatedGroupings)
         pendingLiveGroupingsCompletion = nil
         liveGroupingsToTranslate = []

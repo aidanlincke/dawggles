@@ -7,20 +7,6 @@ import SwiftUI
 import Translation
 import Foundation
 import Combine
-import CoreFoundation
-
-enum DebugLog {
-    /// Toggle to reduce console noise while debugging.
-    static var liveEnabled: Bool = true
-
-    static func live(_ message: @autoclosure () -> String) {
-        #if DEBUG
-        guard liveEnabled else { return }
-        let t = String(format: "%.3f", CFAbsoluteTimeGetCurrent())
-        print("[LIVE \(t)] \(message())")
-        #endif
-    }
-}
 
 // MARK: - Translation Settings
 
@@ -125,7 +111,6 @@ private struct TranslationViewModifier: ViewModifier {
                 print("TranslationViewModifier: starting live translation with source=\(sourceCode) target=\(targetCode)")
             }
             .translationTask(configuration) { session in
-                DebugLog.live("TranslationTask: triggered (#\(self.translator.triggerCount))")
                 let taskStart = CFAbsoluteTimeGetCurrent()
                 let blocks = translator.blocksToTranslate
                 print("TranslationViewModifier: blocksToTranslate count=\(blocks.count)")
@@ -137,7 +122,6 @@ private struct TranslationViewModifier: ViewModifier {
                             let t0 = CFAbsoluteTimeGetCurrent()
                             let response = try await session.translate(block.text)
                             let dt = CFAbsoluteTimeGetCurrent() - t0
-                            DebugLog.live("TranslationTask: still translate dt=\(String(format: \"%.2f\", dt))s chars=\(block.text.count)")
                             print("TranslationViewModifier: block translated=\(response.targetText)")
                             var b = block
                             b.translatedText = response.targetText
@@ -150,18 +134,14 @@ private struct TranslationViewModifier: ViewModifier {
                         let fallback = settings.selectedSourceIndex == 0 ? "Could not detect language" : "Translation unavailable"
                         let modifiedBlocks = blocks.map { var b = $0; b.translatedText = fallback; return b }
                         translator.completeTranslation(translatedBlocks: modifiedBlocks)
-                        DebugLog.live("TranslationTask: still translate FAILED domain=\(nsError.domain) code=\(nsError.code)")
                     }
-                    DebugLog.live("TranslationTask: still complete totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s")
                     return
                 }
 
                 let live = translator.liveGroupingsToTranslate
-                DebugLog.live("TranslationTask: live processing rows=\(live.count)")
                 guard !live.isEmpty else {
                     print("TranslationViewModifier: no live groupings, marking complete")
                     translator.completeLiveTranslation(translatedGroupings: [])
-                    DebugLog.live("TranslationTask: live complete (empty)")
                     return
                 }
 
@@ -180,9 +160,6 @@ private struct TranslationViewModifier: ViewModifier {
                             let t0 = CFAbsoluteTimeGetCurrent()
                             let response = try await session.translate(src)
                             let dt = CFAbsoluteTimeGetCurrent() - t0
-                            if dt >= 1.0 {
-                                DebugLog.live("TranslationTask: live translate SLOW dt=\(String(format: \"%.2f\", dt))s chars=\(src.count)")
-                            }
                             print("TranslationViewModifier: live translated=\(response.targetText)")
                             translator.storeLiveTranslation(response.targetText, for: src)
                             m["translated_text"] = response.targetText
@@ -192,14 +169,12 @@ private struct TranslationViewModifier: ViewModifier {
                     }
                     print("TranslationViewModifier: ✓ translation batch complete [#\(self.translator.triggerCount)]")
                     translator.completeLiveTranslation(translatedGroupings: out)
-                    DebugLog.live("TranslationTask: live complete totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s hits=\(cacheHits) misses=\(cacheMisses)")
                 } catch {
                     let nsError = error as NSError
                     print("TranslationViewModifier: ✗ live translation failed — \(error) domain=\(nsError.domain) code=\(nsError.code) desc=\(nsError.localizedDescription)")
                     let fallback = settings.selectedSourceIndex == 0 ? "Could not detect language" : "Translation unavailable"
                     let modifiedLive = live.map { var m = $0; m["translated_text"] = fallback; return m }
                     translator.completeLiveTranslation(translatedGroupings: modifiedLive)
-                    DebugLog.live("TranslationTask: live FAILED totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s domain=\(nsError.domain) code=\(nsError.code)")
                 }
             }
     }
