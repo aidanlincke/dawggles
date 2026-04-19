@@ -331,13 +331,56 @@ private struct PairedView: View {
                                     .resizable()
                                     .scaledToFit()
                                 Canvas { context, size in
+                                    // The preview image is `scaledToFit()` inside this ZStack, so the actual rendered
+                                    // image rect may be letterboxed within `size`. Grouping boxes are normalized
+                                    // Vision coordinates (origin bottom-left), so we need to:
+                                    // 1) compute the rendered image rect, 2) flip Y into top-left UI space.
+                                    let imgW = max(1, live.size.width)
+                                    let imgH = max(1, live.size.height)
+                                    let imgAspect = imgW / imgH
+                                    let viewAspect = size.width / max(1, size.height)
+                                    
+                                    let drawW: CGFloat
+                                    let drawH: CGFloat
+                                    let offsetX: CGFloat
+                                    let offsetY: CGFloat
+                                    if imgAspect > viewAspect {
+                                        drawW = size.width
+                                        drawH = size.width / imgAspect
+                                        offsetX = 0
+                                        offsetY = (size.height - drawH) * 0.5
+                                    } else {
+                                        drawH = size.height
+                                        drawW = size.height * imgAspect
+                                        offsetY = 0
+                                        offsetX = (size.width - drawW) * 0.5
+                                    }
+                                    
+                                    func clamp01(_ v: Double) -> Double { min(1, max(0, v)) }
+                                    func visionRectToViewRect(x: Double, y: Double, w: Double, h: Double) -> CGRect? {
+                                        guard w > 0, h > 0 else { return nil }
+                                        // Flip Y from Vision (bottom-left) into view (top-left).
+                                        let vx = clamp01(x)
+                                        let vw = clamp01(w)
+                                        let vh = clamp01(h)
+                                        let vyTop = clamp01(1.0 - y - h)
+                                        
+                                        let rx = offsetX + CGFloat(vx) * drawW
+                                        let ry = offsetY + CGFloat(vyTop) * drawH
+                                        let rw = CGFloat(vw) * drawW
+                                        let rh = CGFloat(vh) * drawH
+                                        guard rw >= 1, rh >= 1 else { return nil }
+                                        return CGRect(x: rx, y: ry, width: rw, height: rh)
+                                    }
+                                    
                                     for (idx, grouping) in translator.liveTranslatedGroupings.enumerated() {
                                         if let x = grouping["x"] as? Double,
                                            let y = grouping["y"] as? Double,
                                            let w = grouping["w"] as? Double,
                                            let h = grouping["h"] as? Double,
                                            let text = grouping["translated_text"] as? String {
-                                            let rect = CGRect(x: x * size.width, y: y * size.height, width: w * size.width, height: h * size.height)
+                                            guard !text.isEmpty else { continue }
+                                            guard let rect = visionRectToViewRect(x: x, y: y, w: w, h: h) else { continue }
                                             let isActive = idx == liveAlignment.lastSentIndex
                                             var path = Path(roundedRect: rect, cornerRadius: 4)
                                             context.stroke(path, with: .color(isActive ? .green : .blue), lineWidth: 2)

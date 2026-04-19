@@ -14,14 +14,17 @@ enum LiveOCRGroupings {
     private static let minimumObservationConfidence: Double = 0.5
     /// After band merge, drop a whole grouping whose **minimum** fragment confidence falls below this (typ. ≤ observation floor).
     private static let minimumMergedGroupingConfidence: Double = 0.45
+    /// Live preview OCR should be fast; downscale frames before Vision.
+    private static let maxLiveOCRSide: CGFloat = 720
 
     /// OCR on-device; builds `groupings` for the Pi. `translated_text` holds source text until translation runs.
     /// Nearby lines (typical signs / packaging) are merged into one grouping with a union box and space-joined text.
     static func buildGroupings(from image: UIImage) -> [[String: Any]] {
-        guard let cgImage = image.cgImage else { return [] }
+        let scaled = scaleIfNeeded(image, maxSide: maxLiveOCRSide)
+        guard let cgImage = scaled.cgImage else { return [] }
 
         let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
+        request.recognitionLevel = .fast
         // Reduces invented “words” from background texture vs language-correction on packaging/labels.
         request.usesLanguageCorrection = false
 
@@ -240,5 +243,21 @@ enum LiveOCRGroupings {
         if let n = v as? NSNumber { return n.doubleValue }
         if let n = v as? CGFloat { return Double(n) }
         return 0
+    }
+    
+    private static func scaleIfNeeded(_ image: UIImage, maxSide: CGFloat) -> UIImage {
+        let w = image.size.width
+        let h = image.size.height
+        guard w > 0, h > 0 else { return image }
+        let maxDim = max(w, h)
+        let scale = min(1, maxSide / maxDim)
+        guard scale < 1 - 0.001 else { return image }
+        
+        let newW = w * scale
+        let newH = h * scale
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: newW, height: newH))
+        return renderer.image { _ in
+            image.draw(in: CGRect(x: 0, y: 0, width: newW, height: newH))
+        }
     }
 }
