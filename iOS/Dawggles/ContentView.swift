@@ -82,18 +82,30 @@ private struct TranslationViewModifier: ViewModifier {
                 translator.clearLiveTranslationCache()
                 let sourceCode = $0 == 0 ? "auto" : TranslationSettings.languageCodes[$0]
                 print("TranslationViewModifier: source changed to \(sourceCode)")
+                #if DEBUG
+                print("[LIVE] TranslationViewModifier: sourceIndex=\($0) sourceCode=\(sourceCode)")
+                #endif
                 configuration = makeConfiguration()
             }
             .onChange(of: settings.selectedTargetIndex) {
                 translator.clearLiveTranslationCache()
                 let targetCode = TranslationSettings.languageCodes[$0]
                 print("TranslationViewModifier: target changed to \(targetCode)")
+                #if DEBUG
+                print("[LIVE] TranslationViewModifier: targetIndex=\($0) targetCode=\(targetCode)")
+                #endif
                 configuration = makeConfiguration()
             }
             .onChange(of: translator.translationTrigger) {
                 if configuration == nil {
+                    #if DEBUG
+                    print("[LIVE] TranslationViewModifier: translationTrigger -> creating configuration")
+                    #endif
                     configuration = makeConfiguration()
                 } else {
+                    #if DEBUG
+                    print("[LIVE] TranslationViewModifier: translationTrigger -> invalidating configuration")
+                    #endif
                     configuration?.invalidate()
                 }
                 let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
@@ -102,8 +114,14 @@ private struct TranslationViewModifier: ViewModifier {
             }
             .onChange(of: translator.liveTranslationTrigger) {
                 if configuration == nil {
+                    #if DEBUG
+                    print("[LIVE] TranslationViewModifier: liveTranslationTrigger -> creating configuration")
+                    #endif
                     configuration = makeConfiguration()
                 } else {
+                    #if DEBUG
+                    print("[LIVE] TranslationViewModifier: liveTranslationTrigger -> invalidating configuration")
+                    #endif
                     configuration?.invalidate()
                 }
                 let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
@@ -111,6 +129,9 @@ private struct TranslationViewModifier: ViewModifier {
                 print("TranslationViewModifier: starting live translation with source=\(sourceCode) target=\(targetCode)")
             }
             .translationTask(configuration) { session in
+                #if DEBUG
+                print("[LIVE] TranslationTask: triggered (#\(self.translator.triggerCount))")
+                #endif
                 let taskStart = CFAbsoluteTimeGetCurrent()
                 let blocks = translator.blocksToTranslate
                 print("TranslationViewModifier: blocksToTranslate count=\(blocks.count)")
@@ -122,6 +143,9 @@ private struct TranslationViewModifier: ViewModifier {
                             let t0 = CFAbsoluteTimeGetCurrent()
                             let response = try await session.translate(block.text)
                             let dt = CFAbsoluteTimeGetCurrent() - t0
+                            #if DEBUG
+                            print("[LIVE] TranslationTask: still translate dt=\(String(format: \"%.2f\", dt))s chars=\(block.text.count)")
+                            #endif
                             print("TranslationViewModifier: block translated=\(response.targetText)")
                             var b = block
                             b.translatedText = response.targetText
@@ -134,14 +158,26 @@ private struct TranslationViewModifier: ViewModifier {
                         let fallback = settings.selectedSourceIndex == 0 ? "Could not detect language" : "Translation unavailable"
                         let modifiedBlocks = blocks.map { var b = $0; b.translatedText = fallback; return b }
                         translator.completeTranslation(translatedBlocks: modifiedBlocks)
+                        #if DEBUG
+                        print("[LIVE] TranslationTask: still FAILED domain=\(nsError.domain) code=\(nsError.code)")
+                        #endif
                     }
+                    #if DEBUG
+                    print("[LIVE] TranslationTask: still complete totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s")
+                    #endif
                     return
                 }
 
                 let live = translator.liveGroupingsToTranslate
+                #if DEBUG
+                print("[LIVE] TranslationTask: live processing rows=\(live.count)")
+                #endif
                 guard !live.isEmpty else {
                     print("TranslationViewModifier: no live groupings, marking complete")
                     translator.completeLiveTranslation(translatedGroupings: [])
+                    #if DEBUG
+                    print("[LIVE] TranslationTask: live complete (empty)")
+                    #endif
                     return
                 }
 
@@ -160,6 +196,11 @@ private struct TranslationViewModifier: ViewModifier {
                             let t0 = CFAbsoluteTimeGetCurrent()
                             let response = try await session.translate(src)
                             let dt = CFAbsoluteTimeGetCurrent() - t0
+                            #if DEBUG
+                            if dt >= 1.0 {
+                                print("[LIVE] TranslationTask: live translate SLOW dt=\(String(format: \"%.2f\", dt))s chars=\(src.count)")
+                            }
+                            #endif
                             print("TranslationViewModifier: live translated=\(response.targetText)")
                             translator.storeLiveTranslation(response.targetText, for: src)
                             m["translated_text"] = response.targetText
@@ -169,12 +210,18 @@ private struct TranslationViewModifier: ViewModifier {
                     }
                     print("TranslationViewModifier: ✓ translation batch complete [#\(self.translator.triggerCount)]")
                     translator.completeLiveTranslation(translatedGroupings: out)
+                    #if DEBUG
+                    print("[LIVE] TranslationTask: live complete totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s hits=\(cacheHits) misses=\(cacheMisses)")
+                    #endif
                 } catch {
                     let nsError = error as NSError
                     print("TranslationViewModifier: ✗ live translation failed — \(error) domain=\(nsError.domain) code=\(nsError.code) desc=\(nsError.localizedDescription)")
                     let fallback = settings.selectedSourceIndex == 0 ? "Could not detect language" : "Translation unavailable"
                     let modifiedLive = live.map { var m = $0; m["translated_text"] = fallback; return m }
                     translator.completeLiveTranslation(translatedGroupings: modifiedLive)
+                    #if DEBUG
+                    print("[LIVE] TranslationTask: live FAILED totalDt=\(String(format: \"%.2f\", CFAbsoluteTimeGetCurrent() - taskStart))s domain=\(nsError.domain) code=\(nsError.code)")
+                    #endif
                 }
             }
     }

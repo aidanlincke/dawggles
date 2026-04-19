@@ -44,6 +44,9 @@ class DawgglesConnection: ObservableObject {
         pendingTranslationLiveArm = false
         previewImage = nil
         liveAlignment?.disarm()
+        #if DEBUG
+        print("[LIVE] DawgglesConnection: preview torn down (alignment disarmed, preview cleared)")
+        #endif
     }
 
     /// Pi ended the JPEG stream (or equivalent): stop alignment and clear live UI state.
@@ -290,6 +293,9 @@ class DawgglesConnection: ObservableObject {
                 DispatchQueue.main.async {
                     self?.isConnected = false
                     self?.handlePiLiveStreamEnded()
+                    #if DEBUG
+                    print("[LIVE] DawgglesConnection: receiveMessage error -> disconnected, ending live stream")
+                    #endif
                 }
                 return
             }
@@ -304,6 +310,9 @@ class DawgglesConnection: ObservableObject {
                     guard let self else { break }
                     let now = CFAbsoluteTimeGetCurrent()
                     self.previewSeq += 1
+                    #if DEBUG
+                    print("[LIVE] DawgglesConnection: preview JPEG #\(self.previewSeq) bytes=\(data.count)")
+                    #endif
                     if now - self.lastPreviewWall >= self.previewMinInterval,
                        let image = UIImage(data: data) {
                         self.lastPreviewWall = now
@@ -312,10 +321,21 @@ class DawgglesConnection: ObservableObject {
                             if self.pendingTranslationLiveArm, !self.suppressAlignmentArmUntilNextStill {
                                 self.pendingTranslationLiveArm = false
                                 self.liveAlignment?.arm(connection: self)
+                                #if DEBUG
+                                print("[LIVE] DawgglesConnection: first preview after still -> arming live alignment")
+                                #endif
                             }
                             self.previewImage = image
                             self.liveAlignment?.onLiveFrame(image)
                         }
+                    } else if now - self.lastPreviewWall < self.previewMinInterval {
+                        #if DEBUG
+                        print("[LIVE] DawgglesConnection: preview JPEG throttled (minInterval=\(String(format: "%.3f", self.previewMinInterval))s)")
+                        #endif
+                    } else {
+                        #if DEBUG
+                        print("[LIVE] DawgglesConnection: preview JPEG decode failed (bytes=\(data.count))")
+                        #endif
                     }
                 default:
                     break
@@ -331,6 +351,9 @@ class DawgglesConnection: ObservableObject {
 
         if obj["event"] as? String == "preview_stopped" {
             DispatchQueue.main.async { self.handlePiLiveStreamEnded() }
+            #if DEBUG
+            print("[LIVE] DawgglesConnection: received preview_stopped")
+            #endif
             return
         }
 
@@ -343,16 +366,25 @@ class DawgglesConnection: ObservableObject {
                 self.receivedTranslation = nil
                 self.suppressAlignmentArmUntilNextStill = false
             }
+            #if DEBUG
+            print("[LIVE] DawgglesConnection: received still picture (bytes=\(imageData.count))")
+            #endif
             let app = obj["app"] as? String ?? "translation"
             if app == "translation" {
                 Task { await self.beginTranslationLiveSessionAfterStill() }
             }
         } else if let groupings = obj["groupings"] as? [[String: Any]] {
+            #if DEBUG
+            print("[LIVE] DawgglesConnection: received groupings from socket count=\(groupings.count)")
+            #endif
             // Some senders may stream groupings rapidly; guard against overlapping translation tasks.
             // The live-preview path uses `LiveAlignmentSession` + `enqueueLiveGroupings` instead.
             DispatchQueue.main.async {
                 // If live alignment is active, ignore external groupings to avoid fighting the live OCR loop.
                 if self.liveAlignment != nil {
+                    #if DEBUG
+                    print("[LIVE] DawgglesConnection: ignoring socket groupings (live alignment active)")
+                    #endif
                     return
                 }
                 ImageTranslator.shared.beginExternalLiveGroupingsTranslation(groupings: groupings)
@@ -368,6 +400,9 @@ class DawgglesConnection: ObservableObject {
                 self.pendingTranslationLiveArm = true
             }
         }
+        #if DEBUG
+        print("[LIVE] DawgglesConnection: beginTranslationLiveSessionAfterStill -> pendingTranslationLiveArm=\(pendingTranslationLiveArm)")
+        #endif
     }
 
     // MARK: - Send

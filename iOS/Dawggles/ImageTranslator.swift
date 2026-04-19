@@ -146,12 +146,18 @@ class ImageTranslator: ObservableObject {
             let now = CFAbsoluteTimeGetCurrent()
             if liveTranslationStartWall > 0, now - liveTranslationStartWall > translationStuckTimeout {
                 print("ImageTranslator: live translation watchdog tripped (>\(translationStuckTimeout)s); resetting")
+                #if DEBUG
+                print("[LIVE] ImageTranslator: watchdog reset after \(String(format: "%.2f", now - liveTranslationStartWall))s")
+                #endif
                 isTranslating = false
                 pendingLiveGroupingsCompletion = nil
                 queuedLiveGroupings = nil
                 queuedCompletion = nil
             } else {
             print("ImageTranslator: translation in progress, queuing batch")
+            #if DEBUG
+            print("[LIVE] ImageTranslator: queueing translation rows=\(groupings.count)")
+            #endif
             queuedLiveGroupings = groupings
             queuedCompletion = completion
             return
@@ -164,6 +170,13 @@ class ImageTranslator: ObservableObject {
         isTranslating = true
         liveTranslationStartWall = CFAbsoluteTimeGetCurrent()
         print("ImageTranslator: enqueueLiveGroupings #\(triggerCount) with \(groupings.count) items — STARTING TRANSLATION")
+        #if DEBUG
+        print("[LIVE] ImageTranslator: START live translate #\(triggerCount) rows=\(groupings.count)")
+        if let first = groupings.first,
+           let t = first["translated_text"] as? String {
+            print("[LIVE] ImageTranslator: first row src sample=\(t.prefix(60))")
+        }
+        #endif
         liveTranslationTrigger = UUID()
     }
 
@@ -177,6 +190,9 @@ class ImageTranslator: ObservableObject {
         isTranslating = true
         liveTranslationStartWall = CFAbsoluteTimeGetCurrent()
         print("ImageTranslator: beginExternalLiveGroupingsTranslation #\(triggerCount) with \(groupings.count) items")
+        #if DEBUG
+        print("[LIVE] ImageTranslator: START external live translate #\(triggerCount) rows=\(groupings.count)")
+        #endif
         liveTranslationTrigger = UUID()
     }
 
@@ -192,6 +208,9 @@ class ImageTranslator: ObservableObject {
         print("ImageTranslator: completeLiveTranslation with \(translatedGroupings.count) items")
         isTranslating = false
         liveTranslationStartWall = 0
+        #if DEBUG
+        print("[LIVE] ImageTranslator: COMPLETE live translate rows=\(translatedGroupings.count)")
+        #endif
         pendingLiveGroupingsCompletion?(translatedGroupings)
         pendingLiveGroupingsCompletion = nil
         liveGroupingsToTranslate = []

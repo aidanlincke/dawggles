@@ -7,6 +7,7 @@
 //
 
 import Combine
+import Foundation
 import UIKit
 
 private struct IndexHysteresis {
@@ -65,8 +66,33 @@ final class LiveAlignmentSession: ObservableObject {
     private var lastTranslationEnqueueWall: CFAbsoluteTime = 0
     private let translationMinInterval: CFTimeInterval = 0.85
     private var lastEnqueuedOCRFingerprint: String?
+    private var lastDumpWall: CFAbsoluteTime = 0
+    private let dumpMinInterval: CFTimeInterval = 1.5
+
+    private func dumpImageIfNeeded(_ image: UIImage?, tag: String) {
+        #if DEBUG
+        guard let image else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastDumpWall >= dumpMinInterval else { return }
+        lastDumpWall = now
+
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let name = "live_\(Int(now * 1000))_\(tag).jpg"
+        let url = dir.appendingPathComponent(name)
+        do {
+            try data.write(to: url, options: [.atomic])
+            print("[LIVE] LiveAlignment: dumped OCR frame -> \(url.path) (\(data.count) bytes)")
+        } catch {
+            print("[LIVE] LiveAlignment: failed to dump OCR frame: \(error)")
+        }
+        #endif
+    }
 
     func disarm() {
+        #if DEBUG
+        print("[LIVE] LiveAlignment: disarm()")
+        #endif
         tick?.cancel()
         tick = nil
         connection = nil
@@ -89,6 +115,9 @@ final class LiveAlignmentSession: ObservableObject {
     func arm(connection: DawgglesConnection) {
         disarm()
         self.connection = connection
+        #if DEBUG
+        print("[LIVE] LiveAlignment: arm() -> starting OCR timer")
+        #endif
 
         tick = Timer.publish(every: 1.0 / 10.0, on: .main, in: .common)
             .autoconnect()
@@ -113,16 +142,27 @@ final class LiveAlignmentSession: ObservableObject {
         let image = live
         ocrSeq += 1
         let seq = ocrSeq
+        #if DEBUG
+        print("[LIVE] LiveAlignment: OCR start seq=\(seq) img=\(Int(image.size.width))x\(Int(image.size.height))")
+        #endif
         DispatchQueue.global(qos: .userInitiated).async {
             let g = LiveOCRGroupings.buildGroupings(from: image)
             DispatchQueue.main.async { [weak self] in
                 guard let self, seq == self.ocrSeq else { return }
+                #if DEBUG
+                print("[LIVE] LiveAlignment: OCR done seq=\(seq) groupings=\(g.count)")
+                #endif
                 self.handleLiveOCR(groupings: g, connection: conn)
             }
         }
     }
 
     private func handleLiveOCR(groupings raw: [[String: Any]], connection conn: DawgglesConnection) {
+        #if DEBUG
+        if ocrSeq % 10 == 0 {
+            print("[LIVE] LiveAlignment: tick seq=\(ocrSeq) rawCount=\(raw.count) isConnected=\(conn.isConnected)")
+        }
+        #endif
         if raw.isEmpty {
             consecutiveAlignmentMisses += 1
             consecutiveEmptyGroupings += 1
@@ -135,6 +175,9 @@ final class LiveAlignmentSession: ObservableObject {
                 lastSentIndex = nil
                 lastSentROIText = nil
                 lastUIFingerprint = nil
+                #if DEBUG
+                print("[LIVE] LiveAlignment: cleared live boxes (empty streak=\(consecutiveEmptyGroupings))")
+                #endif
             }
             return
         }
@@ -154,6 +197,23 @@ final class LiveAlignmentSession: ObservableObject {
             }
             return m
         }
+        #if DEBUG
+        if !groupings.isEmpty {
+            let sample = groupings.prefix(4).compactMap { d -> String? in
+                let t = (d["translated_text"] as? String) ?? ""
+                let x = (d["x"] as? Double) ?? 0
+                let y = (d["y"] as? Double) ?? 0
+                let w = (d["w"] as? Double) ?? 0
+                let h = (d["h"] as? Double) ?? 0
+                let c = (d["recognition_confidence"] as? Double) ?? 0
+                if t.isEmpty { return nil }
+                return "«\(t.prefix(48))» box=\(String(format: \"%.3f\", x)),\(String(format: \"%.3f\", y)),\(String(format: \"%.3f\", w)),\(String(format: \"%.3f\", h)) conf=\(String(format: \"%.2f\", c))"
+            }
+            if !sample.isEmpty {
+                print("[LIVE] LiveAlignment: OCR sample: \(sample.joined(separator: " | "))")
+            }
+        }
+        #endif
         
         // Update live UI groupings (boxes) even if translation is pending.
         // Skip publishing if unchanged to avoid unnecessary SwiftUI redraws.
@@ -168,6 +228,9 @@ final class LiveAlignmentSession: ObservableObject {
         if uiFingerprint != lastUIFingerprint {
             liveDetectedGroupings = groupings
             lastUIFingerprint = uiFingerprint
+            #if DEBUG
+            print("[LIVE] LiveAlignment: UI boxes updated count=\(groupings.count)")
+            #endif
         }
 
         func normalizeForFingerprint(_ s: String) -> String {
@@ -178,7 +241,13 @@ final class LiveAlignmentSession: ObservableObject {
         let fingerprint = groupings
             .map { normalizeForFingerprint(($0["translated_text"] as? String) ?? "") }
             .joined(separator: "\u{1e}")
+        #if DEBUG
+        print("[LIVE] LiveAlignment: textFingerprint len=\(fingerprint.count)")
+        #endif
         if fingerprint == lastPiFingerprint {
+            #if DEBUG
+            print("[LIVE] LiveAlignment: skip (fingerprint == lastPiFingerprint)")
+            #endif
             return
         }
 
@@ -190,11 +259,20 @@ final class LiveAlignmentSession: ObservableObject {
         }
         if cacheMisses == 0 {
             lastPiFingerprint = fingerprint
+            #if DEBUG
+            print("[LIVE] LiveAlignment: no translation work (all cache hits)")
+            #endif
             return
         }
+        #if DEBUG
+        print("[LIVE] LiveAlignment: translation needed cacheMisses=\(cacheMisses) rows=\(groupings.count)")
+        #endif
         
         // If OCR text is effectively unchanged from the last translation request, don't enqueue again.
         if fingerprint == lastEnqueuedOCRFingerprint {
+            #if DEBUG
+            print("[LIVE] LiveAlignment: skip enqueue (OCR text unchanged from last request)")
+            #endif
             return
         }
 
@@ -203,10 +281,17 @@ final class LiveAlignmentSession: ObservableObject {
         let now = CFAbsoluteTimeGetCurrent()
         if now - lastTranslationEnqueueWall < translationMinInterval {
             // Don’t spam translations if OCR jitter causes frequent text changes.
+            #if DEBUG
+            print("[LIVE] LiveAlignment: translation debounced (Δt=\(String(format: \"%.2f\", now - lastTranslationEnqueueWall))s)")
+            #endif
             return
         }
         lastTranslationEnqueueWall = now
         lastEnqueuedOCRFingerprint = fingerprint
+        #if DEBUG
+        print("[LIVE] LiveAlignment: enqueue translate seq=\(seq) rows=\(groupings.count)")
+        #endif
+        dumpImageIfNeeded(latestLiveFrame, tag: "enqueue_seq_\(seq)")
         ImageTranslator.shared.enqueueLiveGroupings(groupings: groupings) { [weak self] translatedOut in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -220,6 +305,9 @@ final class LiveAlignmentSession: ObservableObject {
                 self.lastTranslatedGroupings = translatedOut
                 self.lastSentIndex = nil
                 self.lastSentROIText = nil
+                #if DEBUG
+                print("[LIVE] LiveAlignment: translate complete seq=\(seq) rows=\(translatedOut.count)")
+                #endif
 
             }
         }
