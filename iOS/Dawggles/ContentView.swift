@@ -5,12 +5,33 @@
 
 import SwiftUI
 import Translation
+import Foundation
+import Combine
+
+// MARK: - Translation Settings
+
+class TranslationSettings: ObservableObject {
+    static let availableLanguages = ["Auto", "English", "Spanish", "Chinese", "French", "German", "Japanese", "Korean"]
+    static let languageCodes = ["", "en", "es", "zh", "fr", "de", "ja", "ko"]
+    
+    @Published var selectedSourceIndex = 3 // Chinese
+    @Published var selectedTargetIndex = 1 // English
+    
+    var sourceLanguage: Locale.Language? {
+        selectedSourceIndex == 0 ? nil : Locale.Language(identifier: Self.languageCodes[selectedSourceIndex])
+    }
+    
+    var targetLanguage: Locale.Language {
+        Locale.Language(identifier: Self.languageCodes[selectedTargetIndex])
+    }
+}
 
 // MARK: - Root
 
 struct ContentView: View {
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
     @StateObject private var translator = ImageTranslator.shared
+    @StateObject private var translationSettings = TranslationSettings()
 
     private var showPairedDashboard: Bool {
         #if DEBUG
@@ -27,6 +48,7 @@ struct ContentView: View {
                 PairingView()
             }
         }
+        .environmentObject(translationSettings)
         .onAppear {
             accessorySetup.ensureSessionActivated()
             #if DEBUG
@@ -35,7 +57,7 @@ struct ContentView: View {
             }
             #endif
         }
-        .modifier(TranslationViewModifier(translator: translator))
+        .modifier(TranslationViewModifier(translator: translator, settings: translationSettings))
     }
 }
 
@@ -43,59 +65,92 @@ struct ContentView: View {
 
 private struct TranslationViewModifier: ViewModifier {
     @ObservedObject var translator: ImageTranslator
+    @ObservedObject var settings: TranslationSettings
     @State private var configuration: TranslationSession.Configuration?
 
     func body(content: Content) -> some View {
         content
+            .onChange(of: settings.selectedSourceIndex) {
+                configuration = nil
+                let sourceCode = $0 == 0 ? "auto" : TranslationSettings.languageCodes[$0]
+                print("TranslationViewModifier: source changed to \(sourceCode)")
+            }
+            .onChange(of: settings.selectedTargetIndex) {
+                configuration = nil
+                let targetCode = TranslationSettings.languageCodes[$0]
+                print("TranslationViewModifier: target changed to \(targetCode)")
+            }
             .onChange(of: translator.translationTrigger) {
-                if configuration == nil {
-                    configuration = TranslationSession.Configuration()
-                } else {
-                    configuration?.invalidate()
-                }
+                configuration = TranslationSession.Configuration(
+                    source: settings.sourceLanguage,
+                    target: settings.targetLanguage,
+                    preferredStrategy: .lowLatency)
+                let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
+                let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
+                print("TranslationViewModifier: starting translation with source=\(sourceCode) target=\(targetCode)")
             }
             .onChange(of: translator.liveTranslationTrigger) {
-                if configuration == nil {
-                    configuration = TranslationSession.Configuration()
-                } else {
-                    configuration?.invalidate()
-                }
+                configuration = TranslationSession.Configuration(
+                    source: settings.sourceLanguage,
+                    target: settings.targetLanguage,
+                    preferredStrategy: .lowLatency)
+                let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
+                let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
+                print("TranslationViewModifier: starting live translation with source=\(sourceCode) target=\(targetCode)")
             }
             .translationTask(configuration) { session in
+                print("TranslationViewModifier: translationTask triggered [#\(self.translator.triggerCount)]")
                 let blocks = translator.blocksToTranslate
+                print("TranslationViewModifier: blocksToTranslate count=\(blocks.count)")
                 if !blocks.isEmpty {
                     var translated: [TranslationBlock] = []
                     do {
                         for block in blocks {
+                            print("TranslationViewModifier: translating block text=\(block.text)")
                             let response = try await session.translate(block.text)
+                            print("TranslationViewModifier: block translated=\(response.targetText)")
                             var b = block
                             b.translatedText = response.targetText
                             translated.append(b)
                         }
                         translator.completeTranslation(translatedBlocks: translated)
                     } catch {
-                        print("TranslationViewModifier: translation failed — \(error)")
-                        translator.completeTranslation(translatedBlocks: blocks)
+                        let nsError = error as NSError
+                        print("TranslationViewModifier: translation failed — \(error) domain=\(nsError.domain) code=\(nsError.code) desc=\(nsError.localizedDescription)")
+                        let fallback = settings.selectedSourceIndex == 0 ? "Could not detect language" : "Translation unavailable"
+                        let modifiedBlocks = blocks.map { var b = $0; b.translatedText = fallback; return b }
+                        translator.completeTranslation(translatedBlocks: modifiedBlocks)
                     }
                     return
                 }
 
                 let live = translator.liveGroupingsToTranslate
-                guard !live.isEmpty else { return }
+                print("TranslationViewModifier: translationTask processing [#\(self.translator.triggerCount)] with \(live.count) items")
+                guard !live.isEmpty else {
+                    print("TranslationViewModifier: no live groupings, marking complete")
+                    translator.completeLiveTranslation(translatedGroupings: [])
+                    return
+                }
 
                 var out: [[String: Any]] = []
                 do {
                     for row in live {
                         var m = row
                         let src = (m["translated_text"] as? String) ?? ""
+                        print("TranslationViewModifier: translating live source=\(src)")
                         let response = try await session.translate(src)
+                        print("TranslationViewModifier: live translated=\(response.targetText)")
                         m["translated_text"] = response.targetText
                         out.append(m)
                     }
+                    print("TranslationViewModifier: ✓ translation batch complete [#\(self.translator.triggerCount)]")
                     translator.completeLiveTranslation(translatedGroupings: out)
                 } catch {
-                    print("TranslationViewModifier: live translation failed — \(error)")
-                    translator.completeLiveTranslation(translatedGroupings: live)
+                    let nsError = error as NSError
+                    print("TranslationViewModifier: ✗ live translation failed — \(error) domain=\(nsError.domain) code=\(nsError.code) desc=\(nsError.localizedDescription)")
+                    let fallback = settings.selectedSourceIndex == 0 ? "Could not detect language" : "Translation unavailable"
+                    let modifiedLive = live.map { var m = $0; m["translated_text"] = fallback; return m }
+                    translator.completeLiveTranslation(translatedGroupings: modifiedLive)
                 }
             }
     }
@@ -169,13 +224,15 @@ private struct PairingView: View {
 private struct PairedView: View {
     @EnvironmentObject private var connection: DawgglesConnection
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
-
+    
     @StateObject private var liveAlignment = LiveAlignmentSession()
+    @ObservedObject private var translator = ImageTranslator.shared
+    @EnvironmentObject var translationSettings: TranslationSettings
     @State private var isRefreshing = false
-
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-
+            
             // Header
             HStack(spacing: 12) {
                 Image(systemName: "eyeglasses")
@@ -192,8 +249,8 @@ private struct PairedView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(Capsule().fill(connection.isConnected
-                        ? Color.green.opacity(0.12)
-                        : Color.red.opacity(0.12)))
+                                               ? Color.green.opacity(0.12)
+                                               : Color.red.opacity(0.12)))
                     .contentTransition(.symbolEffect(.replace))
                     .animation(.easeInOut(duration: 0.25), value: connection.isConnected)
                 // Refresh button
@@ -225,9 +282,43 @@ private struct PairedView: View {
                 connection.liveAlignment = nil
                 liveAlignment.disarm()
             }
-
+            
+            // Language selection
+            HStack(spacing: 16) {
+                VStack(alignment: .leading) {
+                    Text("From")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("From", selection: $translationSettings.selectedSourceIndex) {
+                        ForEach(0..<TranslationSettings.availableLanguages.count, id: \.self) { index in
+                            Text(TranslationSettings.availableLanguages[index])
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                VStack(alignment: .leading) {
+                    Text("To")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("To", selection: $translationSettings.selectedTargetIndex) {
+                        ForEach(1..<TranslationSettings.availableLanguages.count, id: \.self) { index in
+                            Text(TranslationSettings.availableLanguages[index])
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 16)
+            
+            Text("Active: \(TranslationSettings.availableLanguages[translationSettings.selectedSourceIndex]) → \(TranslationSettings.availableLanguages[translationSettings.selectedTargetIndex])")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 12)
+            
             Divider()
-
+            
             ScrollView {
                 VStack(spacing: 24) {
                     if let live = connection.previewImage {
@@ -235,10 +326,26 @@ private struct PairedView: View {
                             Text("Live preview")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Image(uiImage: live)
-                                .resizable()
-                                .scaledToFit()
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            ZStack {
+                                Image(uiImage: live)
+                                    .resizable()
+                                    .scaledToFit()
+                                Canvas { context, size in
+                                    for (idx, grouping) in translator.liveTranslatedGroupings.enumerated() {
+                                        if let x = grouping["x"] as? Double,
+                                           let y = grouping["y"] as? Double,
+                                           let w = grouping["w"] as? Double,
+                                           let h = grouping["h"] as? Double,
+                                           let text = grouping["translated_text"] as? String {
+                                            let rect = CGRect(x: x * size.width, y: y * size.height, width: w * size.width, height: h * size.height)
+                                            let isActive = idx == liveAlignment.lastSentIndex
+                                            var path = Path(roundedRect: rect, cornerRadius: 4)
+                                            context.stroke(path, with: .color(isActive ? .green : .blue), lineWidth: 2)
+                                        }
+                                    }
+                                }
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                             if let idx = liveAlignment.lastSentIndex {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Active ROI: \(idx)")
@@ -250,34 +357,23 @@ private struct PairedView: View {
                                             .foregroundStyle(.primary)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
+                                    if idx < translator.liveTranslatedGroupings.count,
+                                       let translated = translator.liveTranslatedGroupings[idx]["translated_text"] as? String, !translated.isEmpty {
+                                        Text("Translation: \(translated)")
+                                            .font(.body)
+                                            .foregroundStyle(.blue)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
                                 }
-                            }
-                        }
-                    }
-                    // Received image
-                    if let image = connection.receivedImage {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Last Photo")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                            if let translation = connection.receivedTranslation, !translation.isEmpty {
-                                Text(translation)
-                                    .font(.body)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }
                 }
                 .padding(24)
             }
-
+            
             Divider()
-
+            
             // Unpair — destructive, anchored to bottom
             Button(role: .destructive) {
                 accessorySetup.unpairFromPhone()

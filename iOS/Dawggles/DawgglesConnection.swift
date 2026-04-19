@@ -344,15 +344,10 @@ class DawgglesConnection: ObservableObject {
             let app = obj["app"] as? String ?? "translation"
             if app == "translation" {
                 Task { await self.beginTranslationLiveSessionAfterStill() }
-                ImageTranslator.shared.processAndTranslate(image: image) { [weak self] blocks in
-                    guard let self else { return }
-                    guard !blocks.isEmpty else { return }
-                    let summary = blocks.compactMap { $0.translatedText }.joined(separator: " / ")
-                    DispatchQueue.main.async {
-                        self.receivedTranslation = summary.isEmpty ? nil : summary
-                    }
-                }
             }
+        } else if let groupings = obj["groupings"] as? [[String: Any]] {
+            ImageTranslator.shared.liveGroupingsToTranslate = groupings
+            ImageTranslator.shared.liveTranslationTrigger = UUID()
         }
     }
 

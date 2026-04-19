@@ -24,9 +24,14 @@ class ImageTranslator: ObservableObject {
     /// Live path: Pi dictionaries with source text in `translated_text` until `completeLiveTranslation`.
     @Published var liveGroupingsToTranslate: [[String: Any]] = []
     @Published var liveTranslationTrigger = UUID()
+    @Published var liveTranslatedGroupings: [[String: Any]] = []
+    @Published var triggerCount = 0
+    @Published var isTranslating = false
 
     private var pendingCompletion: (([TranslationBlock]) -> Void)?
     private var pendingLiveGroupingsCompletion: (([[String: Any]]) -> Void)?
+    private var queuedLiveGroupings: [[String: Any]]?
+    private var queuedCompletion: (([[String: Any]]) -> Void)?
 
     private init() {}
 
@@ -106,8 +111,18 @@ class ImageTranslator: ObservableObject {
     // MARK: - Live groupings (batch translate `translated_text` source strings)
 
     func enqueueLiveGroupings(groupings: [[String: Any]], completion: @escaping ([[String: Any]]) -> Void) {
+        if isTranslating {
+            print("ImageTranslator: translation in progress, queuing batch")
+            queuedLiveGroupings = groupings
+            queuedCompletion = completion
+            return
+        }
+        
         pendingLiveGroupingsCompletion = completion
         liveGroupingsToTranslate = groupings
+        triggerCount += 1
+        isTranslating = true
+        print("ImageTranslator: enqueueLiveGroupings #\(triggerCount) with \(groupings.count) items — STARTING TRANSLATION")
         liveTranslationTrigger = UUID()
     }
 
@@ -120,8 +135,19 @@ class ImageTranslator: ObservableObject {
     }
 
     func completeLiveTranslation(translatedGroupings: [[String: Any]]) {
+        print("ImageTranslator: completeLiveTranslation with \(translatedGroupings.count) items")
+        isTranslating = false
         pendingLiveGroupingsCompletion?(translatedGroupings)
         pendingLiveGroupingsCompletion = nil
         liveGroupingsToTranslate = []
+        liveTranslatedGroupings = translatedGroupings
+        
+        // Process queued batch if any
+        if let queued = queuedLiveGroupings, let queuedCb = queuedCompletion {
+            queuedLiveGroupings = nil
+            queuedCompletion = nil
+            print("ImageTranslator: processing queued batch")
+            enqueueLiveGroupings(groupings: queued, completion: queuedCb)
+        }
     }
 }
