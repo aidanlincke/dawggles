@@ -346,8 +346,18 @@ class DawgglesConnection: ObservableObject {
                 Task { await self.beginTranslationLiveSessionAfterStill() }
             }
         } else if let groupings = obj["groupings"] as? [[String: Any]] {
-            ImageTranslator.shared.liveGroupingsToTranslate = groupings
-            ImageTranslator.shared.liveTranslationTrigger = UUID()
+            // Some senders may stream groupings rapidly; guard against overlapping translation tasks.
+            // The live-preview path uses `LiveAlignmentSession` + `enqueueLiveGroupings` instead.
+            DispatchQueue.main.async {
+                // If live alignment is active, ignore external groupings to avoid fighting the live OCR loop.
+                if self.liveAlignment != nil { return }
+                let t = ImageTranslator.shared
+                if t.isTranslating { return }
+                t.isTranslating = true
+                t.triggerCount += 1
+                t.liveGroupingsToTranslate = groupings
+                t.liveTranslationTrigger = UUID()
+            }
         }
     }
 

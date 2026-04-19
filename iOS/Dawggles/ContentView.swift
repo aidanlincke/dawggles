@@ -373,7 +373,7 @@ private struct PairedView: View {
                                         return CGRect(x: rx, y: ry, width: rw, height: rh)
                                     }
                                     
-                                    for (idx, grouping) in translator.liveTranslatedGroupings.enumerated() {
+                                    for (idx, grouping) in liveAlignment.liveDetectedGroupings.enumerated() {
                                         if let x = grouping["x"] as? Double,
                                            let y = grouping["y"] as? Double,
                                            let w = grouping["w"] as? Double,
@@ -398,13 +398,6 @@ private struct PairedView: View {
                                         Text(roiText)
                                             .font(.caption)
                                             .foregroundStyle(.primary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                    if idx < translator.liveTranslatedGroupings.count,
-                                       let translated = translator.liveTranslatedGroupings[idx]["translated_text"] as? String, !translated.isEmpty {
-                                        Text("Translation: \(translated)")
-                                            .font(.body)
-                                            .foregroundStyle(.blue)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
                                 }
