@@ -81,19 +81,33 @@ private struct TranslationViewModifier: ViewModifier {
                 print("TranslationViewModifier: target changed to \(targetCode)")
             }
             .onChange(of: translator.translationTrigger) {
-                configuration = TranslationSession.Configuration(
+                // Force `translationTask` to re-run even when source/target stay the same.
+                // (SwiftUI may ignore same-value `Configuration` assignments.)
+                let next = TranslationSession.Configuration(
                     source: settings.sourceLanguage,
                     target: settings.targetLanguage,
-                    preferredStrategy: .lowLatency)
+                    preferredStrategy: .lowLatency
+                )
+                configuration = nil
+                Task { @MainActor in
+                    await Task.yield()
+                    configuration = next
+                }
                 let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
                 let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
                 print("TranslationViewModifier: starting translation with source=\(sourceCode) target=\(targetCode)")
             }
             .onChange(of: translator.liveTranslationTrigger) {
-                configuration = TranslationSession.Configuration(
+                let next = TranslationSession.Configuration(
                     source: settings.sourceLanguage,
                     target: settings.targetLanguage,
-                    preferredStrategy: .lowLatency)
+                    preferredStrategy: .lowLatency
+                )
+                configuration = nil
+                Task { @MainActor in
+                    await Task.yield()
+                    configuration = next
+                }
                 let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
                 let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
                 print("TranslationViewModifier: starting live translation with source=\(sourceCode) target=\(targetCode)")
