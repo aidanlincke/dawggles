@@ -23,6 +23,8 @@ final class DawgglesAccessorySetup: ObservableObject {
     // Hardcoded hotspot credentials — swap for dynamic values once the accessory advertises them.
     private static let hotspotSSID = "Dawggles"
     private static let hotspotPassword = "tamalgames"
+    private static let hotspotJoinMaxAttempts = 3
+    private static let hotspotJoinRetryDelay: TimeInterval = 1.0
 
     @Published var status: String = ""
     @Published private(set) var isSessionReady = false
@@ -35,6 +37,7 @@ final class DawgglesAccessorySetup: ObservableObject {
 
     private var didStartActivation = false
     private var pendingPickerAfterActivation = false
+    private var hotspotJoinRetryWorkItem: DispatchWorkItem?
 
     private init() {}
 
@@ -72,6 +75,7 @@ final class DawgglesAccessorySetup: ObservableObject {
             guard error == nil else { return }
             // User confirmed — now do the hard reset.
             // The accessoryRemoved event will fire separately and clear pairedAccessory.
+            self.hotspotJoinRetryWorkItem?.cancel()
             DawgglesConnection.shared.disconnect()
             NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
         }
@@ -85,20 +89,42 @@ final class DawgglesAccessorySetup: ObservableObject {
     /// Requires `NSAccessorySetupKitSupports` to include "WiFi" and the pairing
     /// descriptor to have had `ssid` set.
     func joinHotspot(accessory: ASAccessory) {
+        hotspotJoinRetryWorkItem?.cancel()
         DawgglesConnection.shared.beginConnecting()
+        joinHotspot(accessory: accessory, attempt: 1)
+    }
+
+    private func joinHotspot(accessory: ASAccessory, attempt: Int) {
         NEHotspotConfigurationManager.shared.joinAccessoryHotspot(accessory,
                                                                   passphrase: Self.hotspotPassword) { error in
             Task { @MainActor in
                 if let error {
-                    let ns = error as NSError
-                    let isAlreadyAssociated = ns.domain == NEHotspotConfigurationErrorDomain
-                        && ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue
-                    if !isAlreadyAssociated {
-                        print("DawgglesAccessorySetup: joinAccessoryHotspot: \(error.localizedDescription)")
+                    if isAlreadyAssociatedError(error) {
+                        hotspotJoinRetryWorkItem?.cancel()
+                        DawgglesConnection.shared.connectWebSocket()
+                        return
                     }
+
+                    if attempt < Self.hotspotJoinMaxAttempts {
+                        let nextAttempt = attempt + 1
+                        print("DawgglesAccessorySetup: joinAccessoryHotspot failed (attempt \(attempt)/\(Self.hotspotJoinMaxAttempts)): \(error.localizedDescription)")
+
+                        let work = DispatchWorkItem { [weak self] in
+                            self?.joinHotspot(accessory: accessory, attempt: nextAttempt)
+                        }
+                        hotspotJoinRetryWorkItem = work
+                        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hotspotJoinRetryDelay, execute: work)
+                        return
+                    }
+
+                    print("DawgglesAccessorySetup: joinAccessoryHotspot failed after \(Self.hotspotJoinMaxAttempts) attempts: \(error.localizedDescription)")
+                    status = "Could not join Dawggles Wi-Fi. Please try again."
+                    hotspotJoinRetryWorkItem?.cancel()
+                    DawgglesConnection.shared.disconnect()
+                    return
                 }
-                // Always attempt connection — the WebSocket retry loop handles cases
-                // where DHCP hasn't finished yet or the join silently failed.
+
+                hotspotJoinRetryWorkItem?.cancel()
                 DawgglesConnection.shared.connectWebSocket()
             }
         }
@@ -134,6 +160,7 @@ final class DawgglesAccessorySetup: ObservableObject {
         case .accessoryChanged:
             break
         case .accessoryRemoved:
+            hotspotJoinRetryWorkItem?.cancel()
             pairedAccessory = nil
             status = ""
         case .pickerDidPresent:
@@ -156,6 +183,7 @@ final class DawgglesAccessorySetup: ObservableObject {
         case .accessoryDiscovered:
             break
         case .invalidated:
+            hotspotJoinRetryWorkItem?.cancel()
             isSessionReady = false
             didStartActivation = false
             isPairing = false
@@ -225,6 +253,12 @@ final class DawgglesAccessorySetup: ObservableObject {
         let companyIDs = (info["NSAccessorySetupBluetoothCompanyIdentifiers"] as? [String]) ?? []
 
         return !names.isEmpty && !services.isEmpty && !companyIDs.isEmpty
+    }
+
+    private func isAlreadyAssociatedError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        return ns.domain == NEHotspotConfigurationErrorDomain
+            && ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue
     }
 }
 

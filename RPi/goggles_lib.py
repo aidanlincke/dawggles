@@ -414,7 +414,31 @@ def _read_pisugar_battery() -> float | None:
         return None
 
 
+def _read_pisugar_charging() -> bool:
+    """Query the PiSugar server for charging state. Returns True if charging."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(("127.0.0.1", 8423))
+        s.sendall(b"get battery_charging\n")
+        response = s.recv(64).decode("utf-8", errors="ignore")
+        s.close()
+        # response is like "battery_charging: true\n"
+        return "true" in response.lower()
+    except Exception:
+        return False
+
+
 class Display:
+    # Header layout constants (single source of truth).
+    HEADER_TEXT_Y = 2
+    HEADER_DIVIDER_Y = 11
+    HEADER_CONTENT_START_Y = HEADER_DIVIDER_Y + 3
+    STATUS_WIFI_X = 105
+    STATUS_BATTERY_X = 117
+    STATUS_ICON_TOP_Y = HEADER_TEXT_Y
+    STATUS_ICON_HEIGHT = 7
+
     def __init__(self, shared_class):
         self.shared_class = shared_class
         self.display_data = {}
@@ -422,6 +446,7 @@ class Display:
         self.temp_message_timer = None
         self._last_connected = None
         self._battery_level = _read_pisugar_battery()
+        self._is_charging = _read_pisugar_charging()
         # Connection indicator is coupled 1:1 to the title bar — it only shows
         # when draw_app_header() has drawn a header. Any full-screen redraw
         # that doesn't call draw_app_header() must clear this flag so the
@@ -470,8 +495,9 @@ class Display:
         self.oled.show = _show_and_stream
 
     def _status_poll_loop(self):
-        """Refresh status bar icons whenever connection state or battery level changes."""
+        """Refresh status bar icons whenever connection state, battery level, or charging state changes."""
         battery_tick = 0
+        charging_tick = 0
         while True:
             time.sleep(1)
             if not self.hardware_available or self.shared_class.server is None:
@@ -485,6 +511,17 @@ class Display:
                 self._last_connected = connected
 
             batt_changed = False
+
+            # Check charging state every 2 seconds for near-instant plug/unplug response
+            charging_tick += 1
+            if charging_tick >= 2:
+                charging_tick = 0
+                new_charging = _read_pisugar_charging()
+                if new_charging != self._is_charging:
+                    self._is_charging = new_charging
+                    batt_changed = True
+
+            # Check battery percentage every 30 seconds
             battery_tick += 1
             if battery_tick >= 30:
                 battery_tick = 0
@@ -496,57 +533,90 @@ class Display:
             if conn_changed or batt_changed:
                 with self.display_lock:
                     # Clear the full status icon zone (wifi + battery), redraw, push
-                    self.oled.fill_rect(105, 0, 23, 8, 0)
+                    self.oled.fill_rect(
+                        self.STATUS_WIFI_X,
+                        self.STATUS_ICON_TOP_Y,
+                        23,
+                        self.STATUS_ICON_HEIGHT,
+                        0,
+                    )
                     self._draw_status_bar()
                     self.oled.show()
 
     def _draw_battery_icon(self):
-        """Battery icon at x=117–127, y=1–6. WiFi sits to its left.
-        Body outline: x=117–124 (8px wide, 6px tall).
-        Nub: x=125–127, y=2–5.
-        Interior fill: x=118–123 (6px), y=2–5 — filled left-to-right by level."""
+        """Battery icon at x=117–127 and aligned to STATUS_ICON_TOP_Y. WiFi sits to its left.
+        Body outline: x=117–125 (9px wide, 7px tall).
+        Nub: x=126–127, y=top+1..top+5.
+        Interior fill: x=118–124, y=top+1..top+5 (7px wide, 5px tall) filled left-to-right.
+        Charging: classic ⚡ bolt, 3 lines of 3 pixels each, perfectly centered in 7-wide interior.
+
+        Bolt shape (5 rows tall, 3 cols wide, centered at x=121):
+          x: 120 121 122
+          y=top+1: .   .   ■    ← upper tip
+          y=top+2: .   ■   .    ← upper diagonal
+          y=top+3: ■   ■   ■    ← horizontal bar
+          y=top+4: .   ■   .    ← lower diagonal
+          y=top+5: ■   .   .    ← lower tip
+        """
         o = self.oled
         pct = self._battery_level
+        top_y = self.STATUS_ICON_TOP_Y
+        battery_x = self.STATUS_BATTERY_X
 
-        # Body outline
-        o.rect(117, 1, 8, 6, 1)
-        # Nub (positive terminal on the right)
-        o.vline(125, 2, 4, 1)
-        o.vline(126, 2, 4, 1)
-        o.pixel(127, 3, 1)
-        o.pixel(127, 4, 1)
+        # Body outline (1px wider than before)
+        o.rect(battery_x, top_y, 9, 7, 1)
+        # Nub (positive terminal on the right) — now 2px wide
+        o.vline(battery_x + 9, top_y + 1, 5, 1)
+        o.pixel(battery_x + 10, top_y + 2, 1)
+        o.pixel(battery_x + 10, top_y + 3, 1)
 
-        # Interior fill (6px wide, 4px tall)
-        if pct is not None:
-            fill_w = round(pct / 100 * 6)
-            if fill_w > 0:
-                o.fill_rect(118, 2, fill_w, 4, 1)
+        # Interior fill (7px wide, 5px tall)
+        fill_w = round(pct / 100 * 7) if pct is not None else 0
+        if fill_w > 0:
+            o.fill_rect(battery_x + 1, top_y + 1, fill_w, 5, 1)
+
+        # Charging bolt — each pixel opposite color of fill behind it
+        if self._is_charging:
+            fill_end_x = battery_x + 1 + fill_w
+            bolt_pixels = [
+                (battery_x + 5, top_y + 1),                       # upper tip
+                (battery_x + 4, top_y + 2),                       # upper diagonal
+                (battery_x + 3, top_y + 3), (battery_x + 4, top_y + 3), (battery_x + 5, top_y + 3),  # horizontal bar
+                (battery_x + 4, top_y + 4),                       # lower diagonal
+                (battery_x + 3, top_y + 5),                       # lower tip
+            ]
+            for bx, by in bolt_pixels:
+                o.pixel(bx, by, 0 if bx < fill_end_x else 1)
 
     def _draw_status_bar(self):
         """Status icons in top-right corner. Only drawn when a title bar is present.
-        Layout: wifi (x=105–113) · gap (x=114–116) · battery (x=117–127)."""
+        Layout: wifi (x=105–113) · gap (x=114–116) · battery (x=117–127).
+        The top of all status icons is tied to STATUS_ICON_TOP_Y so it aligns with the header text baseline."""
         if not self.hardware_available or self.shared_class.server is None:
             return
         if not self._has_title_bar:
             return
 
         connected = self.shared_class.server.connected
+        wifi_x = self.STATUS_WIFI_X
+        top_y = self.STATUS_ICON_TOP_Y
+
         # WiFi icon at x=105–113 (9px wide), 3px gap before battery at x=117
-        # Outer arc (y=0–2)
-        self.oled.hline(107, 0, 5, 1)   # top: x=107-111
-        self.oled.pixel(106, 1, 1)
-        self.oled.pixel(112, 1, 1)
-        self.oled.pixel(105, 2, 1)
-        self.oled.pixel(113, 2, 1)
-        # Middle arc (y=3–4)
-        self.oled.hline(108, 3, 3, 1)   # x=108-110
-        self.oled.pixel(107, 4, 1)
-        self.oled.pixel(111, 4, 1)
-        # Dot (y=6)
-        self.oled.pixel(109, 6, 1)
+        # Outer arc (top_y..top_y+2)
+        self.oled.hline(wifi_x + 2, top_y, 5, 1)   # top: x=wifi_x+2..wifi_x+6
+        self.oled.pixel(wifi_x + 1, top_y + 1, 1)
+        self.oled.pixel(wifi_x + 7, top_y + 1, 1)
+        self.oled.pixel(wifi_x, top_y + 2, 1)
+        self.oled.pixel(wifi_x + 8, top_y + 2, 1)
+        # Middle arc (top_y+3..top_y+4)
+        self.oled.hline(wifi_x + 3, top_y + 3, 3, 1)   # x=wifi_x+3..wifi_x+5
+        self.oled.pixel(wifi_x + 2, top_y + 4, 1)
+        self.oled.pixel(wifi_x + 6, top_y + 4, 1)
+        # Dot (top_y+6)
+        self.oled.pixel(wifi_x + 4, top_y + 6, 1)
 
         if not connected:
-            self.oled.line(105, 0, 113, 7, 1)
+            self.oled.line(wifi_x, top_y, wifi_x + 8, top_y + 6, 1)
 
         self._draw_battery_icon()
 
@@ -736,10 +806,10 @@ class Display:
 
     def draw_app_header(self, label: str):
         """Standard top bar: label at left, divider at y=11, status bar at right.
-        Call after fill(0), before drawing content (which should start at y=14)."""
+        Call after fill(0), before drawing content (which should start at HEADER_CONTENT_START_Y)."""
         self._has_title_bar = True
-        self.oled.text(label, 0, 2, 1)
-        self.oled.hline(0, 11, self.oled.width, 1)
+        self.oled.text(label, 0, self.HEADER_TEXT_Y, 1)
+        self.oled.hline(0, self.HEADER_DIVIDER_Y, self.oled.width, 1)
         self._draw_status_bar()
 
     def update_display(self, data):

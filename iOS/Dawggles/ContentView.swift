@@ -309,6 +309,7 @@ private struct PairedView: View {
     @ObservedObject private var translator = ImageTranslator.shared
     @EnvironmentObject var translationSettings: TranslationSettings
     @State private var showSettings = false
+    @AppStorage("presentationMode") private var presentationMode: Bool = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -336,40 +337,31 @@ private struct PairedView: View {
                 } label: {
                     Image(systemName: pillIcon)
                         .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 20, height: 20)
                         .foregroundStyle(pillColor)
                         .symbolEffect(.pulse, options: .speed(2.0), isActive: connection.isConnecting)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background {
-                            ZStack {
-                                Capsule().fill(.ultraThinMaterial)
-                                Capsule().fill(pillColor.opacity(0.15))
-                            }
-                        }
-                        .overlay {
-                            Capsule().strokeBorder(pillColor.opacity(0.25), lineWidth: 0.5)
-                        }
                         .contentTransition(.symbolEffect(.replace))
                         .animation(.easeInOut(duration: 0.25), value: connection.connectionStatus)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
                 }
-                .disabled(connection.connectionStatus != .disconnected)
+                .buttonStyle(.plain)
+                .glassEffect(.regular.tint(pillColor.opacity(0.35)).interactive(), in: Capsule())
+                .allowsHitTesting(connection.connectionStatus == .disconnected)
+                .animation(.easeInOut(duration: 0.25), value: connection.connectionStatus)
                 // Settings gear
                 Button {
                     showSettings = true
                 } label: {
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .frame(width: 20, height: 20)
+                        .foregroundStyle(.blue)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background {
-                            ZStack {
-                                Capsule().fill(.ultraThinMaterial)
-                                Capsule().fill(Color.primary.opacity(0.06))
-                            }
-                        }
-                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
                 }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.tint(.blue.opacity(0.35)).interactive(), in: Capsule())
             }
             .padding(.horizontal, 24)
             .padding(.top, 20)
@@ -420,10 +412,23 @@ private struct PairedView: View {
                 .padding(.bottom, 12)
             
             Divider()
-            
+
+            if presentationMode {
+                HStack {
+                    Image(systemName: "play.rectangle.fill")
+                        .foregroundStyle(.blue)
+                    Text("Presentation Mode")
+                        .font(.subheadline)
+                        .bold()
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+            }
+
             ScrollView {
                 VStack(spacing: 24) {
-                    if let oled = connection.oledImage {
+                    if presentationMode, let oled = connection.oledImage {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Display")
                                 .font(.caption)
@@ -452,7 +457,7 @@ private struct PairedView: View {
                                 .animation(.easeInOut(duration: 0.25), value: stale)
                         }
                     }
-                    if let live = connection.previewImage {
+                    if presentationMode, let live = connection.previewImage {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Live preview")
                                 .font(.caption)
@@ -571,18 +576,32 @@ private struct PairedView: View {
 
 private struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("presentationMode") private var presentationMode: Bool = false
 
     var body: some View {
         NavigationStack {
             List {
-                // settings go here
+                Section("Presentation Mode") {
+                    Toggle("Presentation Mode", isOn: $presentationMode)
+                }
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(width: 20, height: 20)
+                            .foregroundStyle(.blue)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.tint(.blue.opacity(0.35)).interactive(), in: Capsule())
                 }
+                .sharedBackgroundVisibility(.hidden)
             }
         }
     }
