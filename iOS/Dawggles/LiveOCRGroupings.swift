@@ -27,7 +27,7 @@ enum LiveOCRGroupings {
         request.recognitionLevel = .accurate
         // Reduces invented “words” from background texture vs language-correction on packaging/labels.
         request.usesLanguageCorrection = false
-
+        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "ja", "ko", "en-US"]
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up, options: [:])
         do {
             try handler.perform([request])

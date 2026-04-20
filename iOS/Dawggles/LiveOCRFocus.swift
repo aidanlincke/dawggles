@@ -35,6 +35,7 @@ enum LiveOCRFocus {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .fast
         request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "ja", "ko", "en-US"]
 
         let handler = VNImageRequestHandler(cgImage: cropped, orientation: .up, options: [:])
         do {
