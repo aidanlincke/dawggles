@@ -2,16 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSAccessorySetupSupports</key>
-	<array>
-		<string>Bluetooth</string>
-		<string>WiFi</string>
-	</array>
-	<key>NSAccessorySetupKitSupports</key>
-	<array>
-		<string>Bluetooth</string>
-		<string>WiFi</string>
-	</array>
 	<key>NSAccessorySetupBluetoothCompanyIdentifiers</key>
 	<array>
 		<string>FFFF</string>
@@ -24,9 +14,15 @@
 	<array>
 		<string>0000D100-0000-1000-8000-00805F9B34FB</string>
 	</array>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Dawggles uses Bluetooth to find your glasses and complete setup.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Dawggles connects to your glasses over local Wi-Fi to stream photos and commands.</string>
+	<key>NSAccessorySetupKitSupports</key>
+	<array>
+		<string>Bluetooth</string>
+		<string>WiFi</string>
+	</array>
+	<key>NSAccessorySetupSupports</key>
+	<array>
+		<string>Bluetooth</string>
+		<string>WiFi</string>
+	</array>
 </dict>
 </plist>

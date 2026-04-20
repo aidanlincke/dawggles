@@ -67,6 +67,7 @@ private struct TranslationViewModifier: ViewModifier {
     @ObservedObject var translator: ImageTranslator
     @ObservedObject var settings: TranslationSettings
     @State private var configuration: TranslationSession.Configuration?
+    @State private var prefetchConfiguration: TranslationSession.Configuration?
 
     private func makeConfiguration() -> TranslationSession.Configuration {
         TranslationSession.Configuration(
@@ -78,6 +79,9 @@ private struct TranslationViewModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .onAppear {
+                prefetchConfiguration = makeConfiguration()
+            }
             .onChange(of: settings.selectedSourceIndex) {
                 translator.clearLiveTranslationCache()
                 let sourceCode = $0 == 0 ? "auto" : TranslationSettings.languageCodes[$0]
@@ -86,6 +90,7 @@ private struct TranslationViewModifier: ViewModifier {
                 print("[LIVE] TranslationViewModifier: sourceIndex=\($0) sourceCode=\(sourceCode)")
                 #endif
                 configuration = makeConfiguration()
+                prefetchConfiguration = makeConfiguration()
             }
             .onChange(of: settings.selectedTargetIndex) {
                 translator.clearLiveTranslationCache()
@@ -95,6 +100,7 @@ private struct TranslationViewModifier: ViewModifier {
                 print("[LIVE] TranslationViewModifier: targetIndex=\($0) targetCode=\(targetCode)")
                 #endif
                 configuration = makeConfiguration()
+                prefetchConfiguration = makeConfiguration()
             }
             .onChange(of: translator.translationTrigger) {
                 if configuration == nil {
@@ -127,6 +133,9 @@ private struct TranslationViewModifier: ViewModifier {
                 let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
                 let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
                 print("TranslationViewModifier: starting live translation with source=\(sourceCode) target=\(targetCode)")
+            }
+            .translationTask(prefetchConfiguration) { session in
+                try? await session.prepareTranslation()
             }
             .translationTask(configuration) { session in
                 #if DEBUG
@@ -299,7 +308,7 @@ private struct PairedView: View {
     @StateObject private var liveAlignment = LiveAlignmentSession()
     @ObservedObject private var translator = ImageTranslator.shared
     @EnvironmentObject var translationSettings: TranslationSettings
-    @State private var isRefreshing = false
+    @State private var showSettings = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -313,38 +322,60 @@ private struct PairedView: View {
                     .font(.title2)
                     .bold()
                 Spacer()
-                // Connection pill
-                Image(systemName: connection.isConnected ? "wifi" : "wifi.slash")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(connection.isConnected ? Color.green : Color.red)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Capsule().fill(connection.isConnected
-                                               ? Color.green.opacity(0.12)
-                                               : Color.red.opacity(0.12)))
-                    .contentTransition(.symbolEffect(.replace))
-                    .animation(.easeInOut(duration: 0.25), value: connection.isConnected)
-                // Refresh button
+                // Connection pill — tap to reconnect
+                let pillColor: Color = {
+                    switch connection.connectionStatus {
+                    case .connected: return .green
+                    case .connecting: return .orange
+                    case .disconnected: return .red
+                    }
+                }()
+                let pillIcon = connection.connectionStatus == .disconnected ? "wifi.slash" : "wifi"
                 Button {
-                    isRefreshing = true
                     accessorySetup.reconnect()
                 } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .symbolEffect(.rotate, options: .repeating, isActive: isRefreshing)
+                    Image(systemName: pillIcon)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(pillColor)
+                        .symbolEffect(.pulse, options: .speed(2.0), isActive: connection.isConnecting)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background {
+                            ZStack {
+                                Capsule().fill(.ultraThinMaterial)
+                                Capsule().fill(pillColor.opacity(0.15))
+                            }
+                        }
+                        .overlay {
+                            Capsule().strokeBorder(pillColor.opacity(0.25), lineWidth: 0.5)
+                        }
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(.easeInOut(duration: 0.25), value: connection.connectionStatus)
                 }
-                .disabled(isRefreshing)
+                .disabled(connection.connectionStatus != .disconnected)
+                // Settings gear
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background {
+                            ZStack {
+                                Capsule().fill(.ultraThinMaterial)
+                                Capsule().fill(Color.primary.opacity(0.06))
+                            }
+                        }
+                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
+                }
             }
             .padding(.horizontal, 24)
             .padding(.top, 20)
             .padding(.bottom, 24)
-            .onChange(of: connection.isConnected) { _, connected in
-                if connected { isRefreshing = false }
-            }
-            .onChange(of: connection.isConnecting) { _, connecting in
-                // Stop the spinner if all retry attempts are exhausted
-                if !connecting && !connection.isConnected { isRefreshing = false }
+            .sheet(isPresented: $showSettings) {
+                SettingsSheet()
             }
             .onAppear {
                 connection.liveAlignment = liveAlignment
@@ -392,6 +423,35 @@ private struct PairedView: View {
             
             ScrollView {
                 VStack(spacing: 24) {
+                    if let oled = connection.oledImage {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Display")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            let stale = connection.connectionStatus != .connected
+                            Image(uiImage: oled)
+                                .interpolation(.none)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: 384)
+                                .background(Color.black)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(alignment: .bottomTrailing) {
+                                    if stale {
+                                        Label("Disconnected", systemImage: "exclamationmark")
+                                            .font(.caption2)
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 5)
+                                            .background(.black.opacity(0.6))
+                                            .clipShape(Capsule())
+                                            .padding(8)
+                                    }
+                                }
+                                .opacity(stale ? 0.5 : 1)
+                                .animation(.easeInOut(duration: 0.25), value: stale)
+                        }
+                    }
                     if let live = connection.previewImage {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Live preview")
@@ -503,6 +563,27 @@ private struct PairedView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
+        }
+    }
+}
+
+// MARK: - Settings sheet
+
+private struct SettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // settings go here
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }

@@ -4,6 +4,10 @@ import Network
 import UIKit
 import Darwin
 
+enum ConnectionStatus: Equatable {
+    case disconnected, connecting, connected
+}
+
 /// WebSocket client to the Pi: still images (JSON), live JPEGs (binary), OCR/groupings back, active line index.
 class DawgglesConnection: ObservableObject {
     static let shared = DawgglesConnection()
@@ -12,16 +16,28 @@ class DawgglesConnection: ObservableObject {
     @Published var receivedImage: UIImage? = nil
     @Published private(set) var previewImage: UIImage? = nil
     @Published var receivedTranslation: String?
+    @Published private(set) var oledImage: UIImage? = nil
 
     weak var liveAlignment: LiveAlignmentSession?
 
     private var connection: NWConnection?
     private var reconnectWorkItem: DispatchWorkItem?
+    private let pathMonitor = NWPathMonitor()
+    private let pathMonitorQueue = DispatchQueue(label: "DawgglesConnection.PathMonitor")
+    private var pendingRouteInvalidationWorkItem: DispatchWorkItem?
+    private let routeInvalidationGracePeriod: TimeInterval = 1.0
     private var retryAttempt = 0
     private var hostCandidates: [String] = []
     private var hostIndex = 0
+    private var activeHost: String?
     @Published private(set) var isConnecting = false
     private var hasScheduledRetryForCurrentConnection = false
+
+    var connectionStatus: ConnectionStatus {
+        if isConnected { return .connected }
+        if isConnecting { return .connecting }
+        return .disconnected
+    }
 
     private let websocketPort: NWEndpoint.Port = 8765
     private let defaultHost = "10.42.0.1"
@@ -38,7 +54,80 @@ class DawgglesConnection: ObservableObject {
     /// Pi sent `preview_stopped` or we disconnected — don't arm alignment when OCR completes late.
     private var suppressAlignmentArmUntilNextStill = false
 
-    private init() {}
+    private init() {
+        startPathMonitoring()
+    }
+
+    private func startPathMonitoring() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                self?.handlePathUpdate(path)
+            }
+        }
+        pathMonitor.start(queue: pathMonitorQueue)
+    }
+
+    private func handlePathUpdate(_ path: NWPath) {
+        guard isConnected || isConnecting else { return }
+
+        if let routeIssue = routeIssueReason(for: path) {
+            scheduleRouteInvalidationCheck(initialReason: routeIssue)
+        } else {
+            pendingRouteInvalidationWorkItem?.cancel()
+            pendingRouteInvalidationWorkItem = nil
+        }
+    }
+
+    private func routeIssueReason(for path: NWPath) -> String? {
+        if path.status != .satisfied {
+            return "path unsatisfied"
+        }
+
+        guard let activeHost else { return nil }
+        guard let wifiIP = currentWiFiIPv4() else {
+            return "wifi IP unavailable"
+        }
+
+        // Host should remain reachable on the current Wi-Fi's gateway in this local-topology setup.
+        if let gateway = inferredGateway(from: wifiIP), gateway != activeHost {
+            return "wifi gateway changed from \(activeHost) to \(gateway)"
+        }
+
+        return nil
+    }
+
+    private func scheduleRouteInvalidationCheck(initialReason: String) {
+        pendingRouteInvalidationWorkItem?.cancel()
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.isConnected || self.isConnecting else { return }
+
+            if let currentIssue = self.routeIssueReason(for: self.pathMonitor.currentPath) {
+                self.handleNetworkRouteInvalidated(reason: "\(initialReason) (confirmed: \(currentIssue))")
+            }
+        }
+
+        pendingRouteInvalidationWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + routeInvalidationGracePeriod, execute: work)
+    }
+
+    private func handleNetworkRouteInvalidated(reason: String) {
+        #if DEBUG
+        print("DawgglesConnection: network route invalidated — \(reason)")
+        #endif
+
+        pendingRouteInvalidationWorkItem?.cancel()
+        pendingRouteInvalidationWorkItem = nil
+        reconnectWorkItem?.cancel()
+        hasScheduledRetryForCurrentConnection = false
+        isConnecting = false
+        isConnected = false
+        connection?.cancel()
+        connection = nil
+        activeHost = nil
+        handlePiLiveStreamEnded()
+    }
 
     private func tearDownLiveAlignmentAndPreview() {
         pendingTranslationLiveArm = false
@@ -57,9 +146,15 @@ class DawgglesConnection: ObservableObject {
 
     // MARK: - WebSocket
 
+    /// Immediately enters the connecting state (e.g. while the hotspot join is still in progress).
+    func beginConnecting() {
+        guard !isConnected && !isConnecting else { return }
+        isConnecting = true
+    }
+
     func connectWebSocket() {
-        if isConnected || isConnecting {
-            print("DawgglesConnection: connect request ignored (already connected/connecting)")
+        if isConnected {
+            print("DawgglesConnection: connect request ignored (already connected)")
             return
         }
 
@@ -117,6 +212,7 @@ class DawgglesConnection: ObservableObject {
 
         let conn = NWConnection(to: .url(wsURL), using: params)
         connection = conn
+        activeHost = host
 
         conn.stateUpdateHandler = { [weak self] state in
             print("DawgglesConnection state → \(state)")
@@ -147,6 +243,7 @@ class DawgglesConnection: ObservableObject {
                     print("DawgglesConnection: cancelled")
                     self.isConnected = false
                     self.connection = nil
+                    self.activeHost = nil
                     self.isConnecting = false
                 @unknown default:
                     break
@@ -292,6 +389,7 @@ class DawgglesConnection: ObservableObject {
             if error != nil {
                 DispatchQueue.main.async {
                     self?.isConnected = false
+                    self?.activeHost = nil
                     self?.handlePiLiveStreamEnded()
                     #if DEBUG
                     print("[LIVE] DawgglesConnection: receiveMessage error -> disconnected, ending live stream")
@@ -370,6 +468,14 @@ class DawgglesConnection: ObservableObject {
         guard let data = text.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
+        if obj["event"] as? String == "oled_frame",
+           let b64 = obj["buffer_b64"] as? String,
+           let buf = Data(base64Encoded: b64),
+           let image = Self.oledBufferToImage(buf) {
+            DispatchQueue.main.async { self.oledImage = image }
+            return
+        }
+
         if obj["event"] as? String == "preview_stopped" {
             DispatchQueue.main.async { self.handlePiLiveStreamEnded() }
             #if DEBUG
@@ -426,6 +532,33 @@ class DawgglesConnection: ObservableObject {
         #endif
     }
 
+    // MARK: - OLED decode
+
+    private static func oledBufferToImage(_ buffer: Data) -> UIImage? {
+        guard buffer.count == 1024 else { return nil }
+        let width = 128, height = 64
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for page in 0..<8 {
+            for x in 0..<width {
+                let byte = buffer[page * width + x]
+                for bit in 0..<8 {
+                    let v: UInt8 = ((byte >> bit) & 1) == 1 ? 255 : 0
+                    let idx = ((page * 8 + bit) * width + x) * 4
+                    pixels[idx] = v; pixels[idx+1] = v; pixels[idx+2] = v; pixels[idx+3] = 255
+                }
+            }
+        }
+        let colorSpace = CGColorSpaceCreateDeviceGray()
+        var grayPixels = [UInt8](repeating: 0, count: width * height)
+        for i in 0..<(width * height) { grayPixels[i] = pixels[i * 4] }
+        guard let ctx = CGContext(data: &grayPixels, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: width,
+                                  space: colorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue),
+              let cgImage = ctx.makeImage() else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+
     // MARK: - Send
 
     func sendJSON(_ obj: [String: Any]) {
@@ -459,9 +592,12 @@ class DawgglesConnection: ObservableObject {
     // MARK: - Disconnect
 
     func disconnect() {
+        pendingRouteInvalidationWorkItem?.cancel()
+        pendingRouteInvalidationWorkItem = nil
         reconnectWorkItem?.cancel()
         connection?.cancel()
         connection = nil
+        activeHost = nil
         isConnecting = false
         hasScheduledRetryForCurrentConnection = false
         DispatchQueue.main.async {

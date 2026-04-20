@@ -85,6 +85,7 @@ final class DawgglesAccessorySetup: ObservableObject {
     /// Requires `NSAccessorySetupKitSupports` to include "WiFi" and the pairing
     /// descriptor to have had `ssid` set.
     func joinHotspot(accessory: ASAccessory) {
+        DawgglesConnection.shared.beginConnecting()
         NEHotspotConfigurationManager.shared.joinAccessoryHotspot(accessory,
                                                                   passphrase: Self.hotspotPassword) { error in
             Task { @MainActor in
@@ -98,10 +99,7 @@ final class DawgglesAccessorySetup: ObservableObject {
                 }
                 // Always attempt connection — the WebSocket retry loop handles cases
                 // where DHCP hasn't finished yet or the join silently failed.
-                Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    DawgglesConnection.shared.connectWebSocket()
-                }
+                DawgglesConnection.shared.connectWebSocket()
             }
         }
     }

@@ -447,10 +447,28 @@ class Display:
             self.oled.fill(0)
             self.oled.show()
             self.hardware_available = True
+            self._wrap_oled_show()
         except Exception as e:
             log.warning(f"OLED init failed, continuing without display: {e}")
             self.hardware_available = False
-    
+
+    def _wrap_oled_show(self):
+        _orig = self.oled.show
+        shared = self.shared_class
+
+        def _show_and_stream():
+            _orig()
+            srv = shared.server
+            if srv is None or not srv.connected:
+                return
+            try:
+                b64 = base64.standard_b64encode(bytes(self.oled.buffer)).decode("ascii")
+                srv.send_json({"app": "system", "event": "oled_frame", "buffer_b64": b64})
+            except Exception:
+                pass
+
+        self.oled.show = _show_and_stream
+
     def _status_poll_loop(self):
         """Refresh status bar icons whenever connection state or battery level changes."""
         battery_tick = 0
