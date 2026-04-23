@@ -71,11 +71,11 @@ final class DawgglesAccessorySetup: ObservableObject {
             $0.displayName.localizedCaseInsensitiveContains("Dawggles")
         }) ?? session.accessories.first else { return }
 
-        session.removeAccessory(accessory) { error in
+        session.removeAccessory(accessory) { [weak self] error in
             guard error == nil else { return }
             // User confirmed — now do the hard reset.
             // The accessoryRemoved event will fire separately and clear pairedAccessory.
-            self.hotspotJoinRetryWorkItem?.cancel()
+            self?.hotspotJoinRetryWorkItem?.cancel()
             DawgglesConnection.shared.disconnect()
             NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: Self.hotspotSSID)
         }
@@ -99,8 +99,8 @@ final class DawgglesAccessorySetup: ObservableObject {
                                                                   passphrase: Self.hotspotPassword) { error in
             Task { @MainActor in
                 if let error {
-                    if isAlreadyAssociatedError(error) {
-                        hotspotJoinRetryWorkItem?.cancel()
+                    if self.isAlreadyAssociatedError(error) {
+                        self.hotspotJoinRetryWorkItem?.cancel()
                         DawgglesConnection.shared.connectWebSocket()
                         return
                     }
@@ -112,19 +112,19 @@ final class DawgglesAccessorySetup: ObservableObject {
                         let work = DispatchWorkItem { [weak self] in
                             self?.joinHotspot(accessory: accessory, attempt: nextAttempt)
                         }
-                        hotspotJoinRetryWorkItem = work
+                        self.hotspotJoinRetryWorkItem = work
                         DispatchQueue.main.asyncAfter(deadline: .now() + Self.hotspotJoinRetryDelay, execute: work)
                         return
                     }
 
                     print("DawgglesAccessorySetup: joinAccessoryHotspot failed after \(Self.hotspotJoinMaxAttempts) attempts: \(error.localizedDescription)")
-                    status = "Could not join Dawggles Wi-Fi. Please try again."
-                    hotspotJoinRetryWorkItem?.cancel()
+                    self.status = "Could not join Dawggles Wi-Fi. Please try again."
+                    self.hotspotJoinRetryWorkItem?.cancel()
                     DawgglesConnection.shared.disconnect()
                     return
                 }
 
-                hotspotJoinRetryWorkItem?.cancel()
+                self.hotspotJoinRetryWorkItem?.cancel()
                 DawgglesConnection.shared.connectWebSocket()
             }
         }

@@ -246,7 +246,7 @@ private struct PairingView: View {
             Spacer()
 
             VStack(spacing: 16) {
-                Image(systemName: "eyeglasses")
+                Image(systemName: "visionpro")
                     .font(.system(size: 80))
                     .foregroundStyle(.blue)
 
@@ -313,12 +313,9 @@ private struct PairedView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            
+
             // Header
             HStack(spacing: 12) {
-                Image(systemName: "eyeglasses")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.blue)
                 Text("Dawggles")
                     .font(.title2)
                     .bold()
@@ -365,7 +362,7 @@ private struct PairedView: View {
             }
             .padding(.horizontal, 24)
             .padding(.top, 20)
-            .padding(.bottom, 24)
+            .padding(.bottom, 16)
             .sheet(isPresented: $showSettings) {
                 SettingsSheet()
             }
@@ -376,198 +373,197 @@ private struct PairedView: View {
                 connection.liveAlignment = nil
                 liveAlignment.disarm()
             }
-            
-            // Language selection
-            HStack(spacing: 16) {
-                VStack(alignment: .leading) {
-                    Text("From")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Picker("From", selection: $translationSettings.selectedSourceIndex) {
-                        ForEach(0..<TranslationSettings.availableLanguages.count, id: \.self) { index in
-                            Text(TranslationSettings.availableLanguages[index])
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-                VStack(alignment: .leading) {
-                    Text("To")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Picker("To", selection: $translationSettings.selectedTargetIndex) {
-                        ForEach(1..<TranslationSettings.availableLanguages.count, id: \.self) { index in
-                            Text(TranslationSettings.availableLanguages[index])
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 16)
-            
-            Text("Active: \(TranslationSettings.availableLanguages[translationSettings.selectedSourceIndex]) → \(TranslationSettings.availableLanguages[translationSettings.selectedTargetIndex])")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
-            
-            Divider()
-
-            if presentationMode {
-                HStack {
-                    Image(systemName: "play.rectangle.fill")
-                        .foregroundStyle(.blue)
-                    Text("Presentation Mode")
-                        .font(.subheadline)
-                        .bold()
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-                .padding(.bottom, 8)
-            }
 
             ScrollView {
-                VStack(spacing: 24) {
-                    if presentationMode, let oled = connection.oledImage {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Display")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            let stale = connection.connectionStatus != .connected
-                            Image(uiImage: oled)
-                                .interpolation(.none)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(maxWidth: 384)
-                                .background(Color.black)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(alignment: .bottomTrailing) {
-                                    if stale {
-                                        Label("Disconnected", systemImage: "exclamationmark")
-                                            .font(.caption2)
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 5)
-                                            .background(.black.opacity(0.6))
-                                            .clipShape(Capsule())
-                                            .padding(8)
+                VStack(spacing: 16) {
+
+                    // Translation card
+                    DashboardCard {
+                        HStack(spacing: 12) {
+                            Image(systemName: "translate")
+                                .foregroundStyle(.blue)
+                            Text("Translation")
+                                .font(.subheadline)
+                                .bold()
+                        }
+                    } content: {
+                        HStack(spacing: 0) {
+                            Menu {
+                                Picker("From", selection: $translationSettings.selectedSourceIndex) {
+                                    ForEach(0..<TranslationSettings.availableLanguages.count, id: \.self) { index in
+                                        Text(TranslationSettings.availableLanguages[index]).tag(index)
                                     }
                                 }
-                                .opacity(stale ? 0.5 : 1)
-                                .animation(.easeInOut(duration: 0.25), value: stale)
-                        }
-                    }
-                    if presentationMode, let live = connection.previewImage {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Live preview")
-                                .font(.caption)
+                            } label: {
+                                Text(TranslationSettings.availableLanguages[translationSettings.selectedSourceIndex])
+                                    .font(.body)
+                                    .fontWeight(.medium)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .frame(maxWidth: .infinity)
+                                    .background(.ultraThinMaterial)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.secondary)
-                            ZStack {
-                                Image(uiImage: live)
-                                    .resizable()
-                                    .scaledToFit()
-                                Canvas { context, size in
-                                    // The preview image is `scaledToFit()` inside this ZStack, so the actual rendered
-                                    // image rect may be letterboxed within `size`. Grouping boxes are normalized
-                                    // Vision coordinates (origin bottom-left), so we need to:
-                                    // 1) compute the rendered image rect, 2) flip Y into top-left UI space.
-                                    let imgW = max(1, live.size.width)
-                                    let imgH = max(1, live.size.height)
-                                    let imgAspect = imgW / imgH
-                                    let viewAspect = size.width / max(1, size.height)
-                                    
-                                    let drawW: CGFloat
-                                    let drawH: CGFloat
-                                    let offsetX: CGFloat
-                                    let offsetY: CGFloat
-                                    if imgAspect > viewAspect {
-                                        drawW = size.width
-                                        drawH = size.width / imgAspect
-                                        offsetX = 0
-                                        offsetY = (size.height - drawH) * 0.5
+                                .padding(.horizontal, 12)
+
+                            Menu {
+                                Picker("To", selection: $translationSettings.selectedTargetIndex) {
+                                    ForEach(1..<TranslationSettings.availableLanguages.count, id: \.self) { index in
+                                        Text(TranslationSettings.availableLanguages[index]).tag(index)
+                                    }
+                                }
+                            } label: {
+                                Text(TranslationSettings.availableLanguages[translationSettings.selectedTargetIndex])
+                                    .font(.body)
+                                    .fontWeight(.medium)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .frame(maxWidth: .infinity)
+                                    .background(.ultraThinMaterial)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                    }
+
+                    // Presentation mode card
+                    if presentationMode {
+                        DashboardCard {
+                            HStack(spacing: 12) {
+                                Image(systemName: "rectangle.inset.filled.and.cursorarrow")
+                                    .foregroundStyle(.blue)
+                                Text("Demo")
+                                    .font(.subheadline)
+                                    .bold()
+                            }
+                        } content: {
+                            let displayConnected = connection.connectionStatus == .connected && connection.oledImage != nil
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Display")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Group {
+                                    if displayConnected, let oled = connection.oledImage {
+                                        Image(uiImage: oled)
+                                            .interpolation(.none)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fit)
                                     } else {
-                                        drawH = size.height
-                                        drawW = size.height * imgAspect
-                                        offsetY = 0
-                                        offsetX = (size.width - drawW) * 0.5
+                                        TestPatternView()
+                                            .aspectRatio(2, contentMode: .fit)
                                     }
-                                    
-                                    func clamp01(_ v: Double) -> Double { min(1, max(0, v)) }
-                                    func visionRectToViewRect(x: Double, y: Double, w: Double, h: Double) -> CGRect? {
-                                        guard w > 0, h > 0 else { return nil }
-                                        // Flip Y from Vision (bottom-left) into view (top-left).
-                                        let vx = clamp01(x)
-                                        let vw = clamp01(w)
-                                        let vh = clamp01(h)
-                                        let vyTop = clamp01(1.0 - y - h)
-                                        
-                                        let rx = offsetX + CGFloat(vx) * drawW
-                                        let ry = offsetY + CGFloat(vyTop) * drawH
-                                        let rw = CGFloat(vw) * drawW
-                                        let rh = CGFloat(vh) * drawH
-                                        guard rw >= 1, rh >= 1 else { return nil }
-                                        return CGRect(x: rx, y: ry, width: rw, height: rh)
-                                    }
-                                    
-                                    // --- DRAWING BLOCK ---
-                                    for (idx, grouping) in liveAlignment.liveDetectedGroupings.enumerated() {
-                                        if let x = grouping["x"] as? Double,
-                                           let y = grouping["y"] as? Double,
-                                           let w = grouping["w"] as? Double,
-                                           let h = grouping["h"] as? Double,
-                                           let text = grouping["translated_text"] as? String {
-                                            guard !text.isEmpty else { continue }
-                                            guard let rect = visionRectToViewRect(x: x, y: y, w: w, h: h) else { continue }
-                                            
-                                            let path = Path(roundedRect: rect, cornerRadius: 4)
-                                            context.stroke(path, with: .color(.blue), lineWidth: 2)
-                                            
-                                            // If we have a translation, resolve the symbol tagged with this index.
-                                            if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
-                                                let anchor = CGPoint(x: rect.minX + 6, y: rect.minY + 6)
-                                                if let resolvedLabel = context.resolveSymbol(id: idx) {
-                                                    context.draw(resolvedLabel, at: anchor, anchor: .topLeading)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .background(Color.black)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .disconnectedOverlay(!displayConnected)
+                            }
+
+                            let cameraStale = connection.previewImage == nil
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Camera")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Group {
+                                    if let live = connection.previewImage {
+                                        ZStack {
+                                            Image(uiImage: live)
+                                                .resizable()
+                                                .scaledToFit()
+                                            Canvas { context, size in
+                                                let imgW = max(1, live.size.width)
+                                                let imgH = max(1, live.size.height)
+                                                let imgAspect = imgW / imgH
+                                                let viewAspect = size.width / max(1, size.height)
+
+                                                let drawW: CGFloat
+                                                let drawH: CGFloat
+                                                let offsetX: CGFloat
+                                                let offsetY: CGFloat
+                                                if imgAspect > viewAspect {
+                                                    drawW = size.width
+                                                    drawH = size.width / imgAspect
+                                                    offsetX = 0
+                                                    offsetY = (size.height - drawH) * 0.5
+                                                } else {
+                                                    drawH = size.height
+                                                    drawW = size.height * imgAspect
+                                                    offsetY = 0
+                                                    offsetX = (size.width - drawW) * 0.5
+                                                }
+
+                                                func clamp01(_ v: Double) -> Double { min(1, max(0, v)) }
+                                                func visionRectToViewRect(x: Double, y: Double, w: Double, h: Double) -> CGRect? {
+                                                    guard w > 0, h > 0 else { return nil }
+                                                    let vx = clamp01(x)
+                                                    let vw = clamp01(w)
+                                                    let vh = clamp01(h)
+                                                    let vyTop = clamp01(1.0 - y - h)
+
+                                                    let rx = offsetX + CGFloat(vx) * drawW
+                                                    let ry = offsetY + CGFloat(vyTop) * drawH
+                                                    let rw = CGFloat(vw) * drawW
+                                                    let rh = CGFloat(vh) * drawH
+                                                    guard rw >= 1, rh >= 1 else { return nil }
+                                                    return CGRect(x: rx, y: ry, width: rw, height: rh)
+                                                }
+
+                                                for (idx, grouping) in liveAlignment.liveDetectedGroupings.enumerated() {
+                                                    if let x = grouping["x"] as? Double,
+                                                       let y = grouping["y"] as? Double,
+                                                       let w = grouping["w"] as? Double,
+                                                       let h = grouping["h"] as? Double,
+                                                       let text = grouping["translated_text"] as? String {
+                                                        guard !text.isEmpty else { continue }
+                                                        guard let rect = visionRectToViewRect(x: x, y: y, w: w, h: h) else { continue }
+
+                                                        let path = Path(roundedRect: rect, cornerRadius: 4)
+                                                        context.stroke(path, with: .color(.blue), lineWidth: 2)
+
+                                                        if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
+                                                            let anchor = CGPoint(x: rect.minX + 6, y: rect.minY + 6)
+                                                            if let resolvedLabel = context.resolveSymbol(id: idx) {
+                                                                context.draw(resolvedLabel, at: anchor, anchor: .topLeading)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } symbols: {
+                                                ForEach(Array(liveAlignment.liveDetectedGroupings.enumerated()), id: \.offset) { idx, grouping in
+                                                    if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
+                                                        Text(ui)
+                                                            .font(.caption2)
+                                                            .foregroundStyle(.white)
+                                                            .padding(.horizontal, 6)
+                                                            .padding(.vertical, 3)
+                                                            .background(.black.opacity(0.75))
+                                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                                            .tag(idx)
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                } symbols: {
-                                    // --- SYMBOLS BLOCK ---
-                                    // Define the SwiftUI views here so the Canvas can "see" them.
-                                    ForEach(Array(liveAlignment.liveDetectedGroupings.enumerated()), id: \.offset) { idx, grouping in
-                                        if let ui = grouping["ui_text"] as? String, !ui.isEmpty {
-                                            Text(ui)
-                                                .font(.caption2)
-                                                .foregroundStyle(.white)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 3)
-                                                .background(.black.opacity(0.75))
-                                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                                .tag(idx)
-                                        }
+                                    } else {
+                                        TestPatternView()
+                                            .aspectRatio(4.0 / 3.0, contentMode: .fit)
                                     }
                                 }
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .disconnectedOverlay(cameraStale)
+                                .animation(.easeInOut(duration: 0.25), value: cameraStale)
                             }
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
                     }
                 }
-                .padding(24)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
             }
-            
-            Divider()
-            
-            // Unpair — destructive, anchored to bottom
-            Button(role: .destructive) {
-                accessorySetup.unpairFromPhone()
-            } label: {
-                Text("Unpair Dawggles")
-                    .font(.subheadline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 12)
         }
     }
 }
@@ -576,13 +572,20 @@ private struct PairedView: View {
 
 private struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
     @AppStorage("presentationMode") private var presentationMode: Bool = false
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Presentation Mode") {
-                    Toggle("Presentation Mode", isOn: $presentationMode)
+                Section {
+                    Toggle("Demo Mode", isOn: $presentationMode)
+                    Button(role: .destructive) {
+                        accessorySetup.unpairFromPhone()
+                        dismiss()
+                    } label: {
+                        Text("Unpair Dawggles")
+                    }
                 }
             }
             .navigationTitle("Settings")
@@ -591,7 +594,7 @@ private struct SettingsSheet: View {
                     Button {
                         dismiss()
                     } label: {
-                        Image(systemName: "checkmark.circle.fill")
+                        Image(systemName: "checkmark")
                             .font(.system(size: 16, weight: .semibold))
                             .frame(width: 20, height: 20)
                             .foregroundStyle(.blue)
@@ -604,5 +607,77 @@ private struct SettingsSheet: View {
                 .sharedBackgroundVisibility(.hidden)
             }
         }
+    }
+}
+
+// MARK: - Dashboard Card
+
+private struct DashboardCard<Header: View, Content: View>: View {
+    let header: Header
+    let content: Content
+
+    init(@ViewBuilder header: () -> Header, @ViewBuilder content: () -> Content) {
+        self.header = header()
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            content
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+// MARK: - Disconnected Overlay
+
+private extension View {
+    func disconnectedOverlay(_ isDisconnected: Bool) -> some View {
+        self
+            .overlay(alignment: .bottomTrailing) {
+                if isDisconnected {
+                    Label("Disconnected", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(.black.opacity(0.6))
+                        .clipShape(Capsule())
+                        .padding(8)
+                }
+            }
+            .opacity(isDisconnected ? 0.5 : 1)
+            .animation(.easeInOut(duration: 0.25), value: isDisconnected)
+    }
+}
+
+// MARK: - Test Pattern (SMPTE-style color bars placeholder)
+
+/// Classic TV broadcast test pattern used as a placeholder when no live feed is available.
+private struct TestPatternView: View {
+    private static let bars: [Color] = [
+        Color(red: 0.75, green: 0.75, blue: 0.75), // white
+        Color(red: 0.75, green: 0.75, blue: 0.0),   // yellow
+        Color(red: 0.0,  green: 0.75, blue: 0.75),  // cyan
+        Color(red: 0.0,  green: 0.75, blue: 0.0),   // green
+        Color(red: 0.75, green: 0.0,  blue: 0.75),  // magenta
+        Color(red: 0.75, green: 0.0,  blue: 0.0),   // red
+        Color(red: 0.0,  green: 0.0,  blue: 0.75),  // blue
+    ]
+
+    var body: some View {
+        GeometryReader { geo in
+            HStack(spacing: 0) {
+                ForEach(0..<Self.bars.count, id: \.self) { i in
+                    Self.bars[i]
+                        .frame(width: geo.size.width / CGFloat(Self.bars.count))
+                }
+            }
+        }
+        .background(Color.black)
     }
 }
