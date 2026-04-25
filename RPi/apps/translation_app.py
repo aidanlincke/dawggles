@@ -13,16 +13,6 @@ class TranslationApp(BaseApp):
     name = "translation"
     label = "Translate"
 
-    @staticmethod
-    def _parse_active_idx(idx):
-        if idx is None or isinstance(idx, bool):
-            return None
-        if isinstance(idx, int):
-            return idx
-        if isinstance(idx, float):
-            return int(idx) if idx.is_integer() else None
-        return None
-
     def __init__(self, shared_class):
         super().__init__(shared_class)
         self.mode = "default"
@@ -34,6 +24,14 @@ class TranslationApp(BaseApp):
         if self.shared_class.camera_client and self.shared_class.camera_client.camera:
             if not self.shared_class.camera_client.running:
                 self.shared_class.camera_client.start_capture_loop()
+        self._trigger_capture()
+
+    def _trigger_capture(self):
+        self.translation_data = None
+        self.translation_groupings = None
+        self.display_idx = 0
+        self.mode = "capturing"
+        self.shared_class.shutter_event.set()
         self.update_display()
 
     def on_unmount(self):
@@ -46,27 +44,32 @@ class TranslationApp(BaseApp):
         })
 
     def render_display(self, display):
-        if self.mode == "live" and not self.translation_groupings:
-            display._render_text(["LIVE", "", "Processing...", ""])
+        if not display.hardware_available:
             return
 
-        if not self.translation_data and not self.translation_groupings:
-            if display.hardware_available:
-                display.oled.fill(0)
-                display._render_text(["TRANSLATION", "", "Press button", "to scan"])
-                display.oled.show()
-            return
+        content_y = display.HEADER_CONTENT_START_Y
+        content_h = display.oled.height - content_y
 
         if self.translation_groupings:
             idx = max(0, min(self.display_idx, len(self.translation_groupings) - 1))
-            g = self.translation_groupings[idx]
-            line = str(g.get("translated_text") or "")
-            if not line.strip():
-                line = str(self.translation_data or "")
+            line = str(self.translation_groupings[idx].get("translated_text") or self.translation_data or "")
         else:
             line = str(self.translation_data or "")
 
-        display._render_text([line[:15], line[15:30]])
+        display.oled.fill(0)
+        display.draw_app_header("Translate")
+
+        if line.strip():
+            for i, chunk in enumerate([line[:15], line[15:30]]):
+                if chunk.strip():
+                    display.oled.text(chunk, 0, content_y + i * 10, 1)
+        else:
+            msg = "Processing..."
+            tx = max(0, (display.oled.width - len(msg) * 6) // 2)
+            ty = content_y + (content_h - 8) // 2
+            display.oled.text(msg, tx, ty, 1)
+
+        display.oled.show()
 
     def _stop_live_session(self):
         """End preview, notify phone, clear session — back to idle."""
@@ -80,15 +83,11 @@ class TranslationApp(BaseApp):
             srv.send_json({"app": self.name, "event": "preview_stopped"})
 
     def on_websocket_disconnect(self):
-        """Phone gone — drop live session locally (``phone_live_stream`` already cleared by server)."""
+        """Phone gone — stop live stream locally (``phone_live_stream`` already cleared by server).
+        Keep translation data so the display holds whatever it was showing."""
         if self.mode != "live":
             return
-        self.translation_data = None
-        self.translation_groupings = None
-        self.display_idx = 0
         self.mode = "default"
-        if self.shared_class.display:
-            self.update_display()
 
     def _start_live_preview(self):
         self.mode = "live"
@@ -107,16 +106,11 @@ class TranslationApp(BaseApp):
             if click_count == 1:
                 import logging
                 logging.info("TranslationApp: Shutter button pressed!")
-                if self.mode == "live":
-                    logging.info("TranslationApp: stopping live session")
-                    self._stop_live_session()
-                    self.update_display()
-                    return
                 if self.mode == "capturing":
                     return
-                self.mode = "capturing"
-                self.shared_class.display.show_temporary_message("CAPTURING...", 1.5)
-                self.shared_class.shutter_event.set()
+                if self.mode == "live":
+                    self._stop_live_session()
+                self._trigger_capture()
             elif click_count == 2:
                 if self.mode != "live":
                     return
@@ -125,51 +119,15 @@ class TranslationApp(BaseApp):
                     self.update_display()
 
     def on_capture_complete(self):
-        # Picture is on the wire; start preview immediately (phone OCR runs in parallel).
         self._start_live_preview()
-        self.shared_class.display.show_temporary_message("SENT TO APP", 1.5)
         self.update_display()
 
     def on_message(self, message):
-        if message.get("_dawggles_ping") is True and self.shared_class.server:
-            self.shared_class.server.send_json({"_dawggles_pong": True})
-            return
-
         if "app" in message and message["app"] != self.name:
             from app_manager import start_app
             start_app(message["app"], self.shared_class)
             if "data" in message and self.shared_class.server:
                 self.shared_class.server.message_queue.put(message)
-            return
-
-        evt = message.get("event")
-        if evt == "focus":
-            if self.mode != "live":
-                return
-            g = self.translation_groupings
-            if not g:
-                return
-            idx = message.get("active_idx")
-            if isinstance(idx, bool):
-                return
-            if isinstance(idx, float):
-                if not idx.is_integer():
-                    return
-                idx = int(idx)
-            elif not isinstance(idx, int):
-                return
-            if idx < 0 or idx >= len(g):
-                return
-            if idx != self.display_idx:
-                self.display_idx = idx
-                self.update_display()
-            return
-
-        if message.get("event") == "preview_start":
-            if self.mode == "live":
-                cc = self.shared_class.camera_client
-                if cc:
-                    cc.ensure_preview_thread()
             return
 
         if "data" in message:
@@ -178,11 +136,5 @@ class TranslationApp(BaseApp):
                 return
             self.translation_data = message.get("data")
             self.translation_groupings = message.get("groupings")
-            idx = message.get("active_idx")
-            g = self.translation_groupings
-            parsed = self._parse_active_idx(idx)
-            if parsed is not None and g and 0 <= parsed < len(g):
-                self.display_idx = parsed
-            else:
-                self.display_idx = 0
+            self.display_idx = 0
             self.update_display()

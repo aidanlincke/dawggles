@@ -570,22 +570,11 @@ class DawgglesConnection: ObservableObject {
         conn.send(content: payload, contentContext: context, isComplete: true, completion: .idempotent)
     }
 
-    /// Full translation update from live OCR: groupings, summary `data`, and which line is nearest the image center.
-    func sendTranslationPayload(data: String, groupings: [[String: Any]], activeIdx: Int) {
+    func sendTranslationPayload(data: String, groupings: [[String: Any]]) {
         sendJSON([
             "app": "translation",
             "data": data,
             "groupings": groupings,
-            "active_idx": activeIdx,
-        ])
-    }
-
-    /// Tell the Pi which `groupings` row is active (optional; live path uses `sendTranslationPayload`).
-    func sendActiveGroupingIndex(_ index: Int) {
-        sendJSON([
-            "app": "translation",
-            "event": "focus",
-            "active_idx": index,
         ])
     }
 

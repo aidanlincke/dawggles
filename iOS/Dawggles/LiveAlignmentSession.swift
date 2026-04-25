@@ -301,7 +301,7 @@ final class LiveAlignmentSession: ObservableObject {
 
                 let summary = translatedOut.compactMap { $0["translated_text"] as? String }.joined(separator: " ")
                 // No ROI/focus selection: Pi will default to index 0 if it wants to show a single line.
-                conn.sendTranslationPayload(data: summary, groupings: translatedOut, activeIdx: 0)
+                conn.sendTranslationPayload(data: summary, groupings: translatedOut)
                 self.lastPiFingerprint = fingerprint
                 self.lastTranslatedGroupings = translatedOut
                 self.lastSentIndex = nil

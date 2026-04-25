@@ -467,7 +467,7 @@ class Display:
             # 128x64 standard OLED. We must use adafruit_ssd1306.SSD1306_SPI
             # Provide font5x8.bin explicitly if needed, but it should fallback to internal.
             self.oled = adafruit_ssd1306.SSD1306_SPI(128, 64, self.spi, self.dc, None, self.cs)
-            self.oled.contrast(5)
+            self.oled.contrast(200)
             self.oled.write_cmd(0xA0) # Seg remap
             self.oled.fill(0)
             self.oled.show()
@@ -827,7 +827,6 @@ class Display:
             self._has_title_bar = False
             if self.hardware_available:
                 self.oled.fill(0)
-                self.oled.show()
 
     def sleep(self):
         """Blank the panel without touching the frame buffer or app state.
