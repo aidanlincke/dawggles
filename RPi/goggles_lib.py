@@ -44,12 +44,9 @@ class SharedClass:
     self.button = None   # App action button, set by app_manager during initialize_system
     self.cycle_button = None # App cycling button
     self.camera_client = None  # Set by app_manager during initialize_system
-    self.shutter_event = Event()
-    self.video_event = Event()
     self.display_lock = Lock()
-    # When True, ``CameraClient`` sends low-res JPEG frames to the phone over WebSocket (binary).
-    # Apps toggle this; do not confuse with ``video_event`` (used by ``video_loop``).
-    self.phone_live_stream = False
+    # When True, ``CameraClient`` sends JPEG frames to the phone over WebSocket (binary).
+    self.camera_streaming = False
     # Registered by ``app_manager`` so apps can reset state when the phone disconnects (no app imports here).
     self.websocket_disconnect_callback = None
     # Set by pairing after BLE knock; main() waits before binding TCP.
@@ -64,7 +61,7 @@ class WebSocketServer:
     WebSocket server: one persistent client connection at a time, full duplex.
     Runs an asyncio event loop in a daemon thread; all other code stays threaded.
     Inbound: UTF-8 JSON text frames from the phone.
-    Outbound: JSON text frames plus optional binary frames (raw JPEG preview bytes).
+    Outbound: JSON text frames plus optional binary frames (raw JPEG camera stream bytes).
     """
 
     def __init__(self, shared_class, host="0.0.0.0", port=8765, message_handler=None):
@@ -138,7 +135,7 @@ class WebSocketServer:
         finally:
             if self._ws is ws:
                 self._ws = None
-            self.shared_class.phone_live_stream = False
+            self.shared_class.camera_streaming = False
             cb = self.shared_class.websocket_disconnect_callback
             if cb:
                 try:
@@ -194,44 +191,39 @@ class CameraClient:
     def __init__(self, shared_class, config, camera=None):
         self.shared_class = shared_class
         self.camera = camera
-        self.capture_thread = None
-        self.running = False
         self._capture_lock = Lock()
-        self._preview_thread = None
-        self._preview_running = False
-        self._has_lores_stream = False
+        self._stream_thread = None
+        self._stream_running = False
         self.initialize_camera(config)
 
     def initialize_camera(self, config):
         if not self.camera:
             self.camera = Picamera2()
 
-        still_config = None
+        video_config = None
+        size = config.get("size")
         try:
             # PiCamera2 rotates 180 degrees by applying both horizontal and vertical flips.
             from libcamera import Transform
-            still_config = self.camera.create_still_configuration(
+            video_config = self.camera.create_video_configuration(
                 main=config,
-                lores={"size": (640, 360)},
                 transform=Transform(hflip=True, vflip=True),
             )
-            self._has_lores_stream = True
-            log.info("camera: applying 180-degree transform (hflip + vflip), lores preview640x360")
+            if size:
+                log.info(
+                    "camera: applying 180-degree transform (hflip + vflip), video %sx%s",
+                    size[0],
+                    size[1],
+                )
+            else:
+                log.info("camera: applying 180-degree transform (hflip + vflip)")
         except Exception as e:
             log.warning("camera: could not apply 180-degree transform, using default orientation: %s", e)
-            try:
-                still_config = self.camera.create_still_configuration(
-                    main=config,
-                    lores={"size": (640, 360)},
-                )
-                self._has_lores_stream = True
-                log.info("camera: lores preview 640x360")
-            except Exception as e2:
-                log.warning("camera: no lores stream: %s", e2)
-                still_config = self.camera.create_still_configuration(main=config)
-                self._has_lores_stream = False
+            video_config = self.camera.create_video_configuration(main=config)
+            if size:
+                log.info("camera: video %sx%s", size[0], size[1])
 
-        self.camera.configure(still_config)
+        self.camera.configure(video_config)
         self.camera.start()
 
         # Pi Camera 3 (IMX708): explicitly use the full sensor area for maximum FOV.
@@ -243,119 +235,57 @@ class CameraClient:
                 log.info("camera: ScalerCrop set to full sensor area %s for maximum FOV", max_crop)
         except Exception as e:
             log.warning("camera: could not set ScalerCrop: %s", e)
-
-    def start_capture_loop(self):
-        if not self.camera:
-            raise RuntimeError("Camera not initialized")
-        if self.capture_thread and self.capture_thread.is_alive():
-            return
-        self.running = True
-        self.shared_class.shutter_event.clear()
-        self.capture_thread = Thread(target=self.capture_loop, daemon=True)
-        self.capture_thread.start()
-
-    def stop_capture_loop(self):
-        self.running = False
-        self._preview_running = False
-        self.shared_class.shutter_event.set() # Wake up the thread so it can exit cleanly
-        if self.capture_thread:
-            self.capture_thread.join(timeout=1)
-
-    def capture_loop(self):
-        while self.running:
-            self.shared_class.shutter_event.wait()
-            if not self.running:
-                break
-            try:
-                stream = io.BytesIO()
-                with self._capture_lock:
-                    # Rely on hardware to encode JPEG at optimal size
-                    self.camera.capture_file(stream, format='jpeg')
-                self.shared_class.data['picture'] = stream.getvalue()
-                self.send_captured_jpeg_to_client()
-                
-                # Notify the app that capture completed
-                import app_manager
-                app_inst = app_manager.get_current_app()
-                if app_inst and hasattr(app_inst, 'on_capture_complete'):
-                    app_inst.on_capture_complete()
-
-            except Exception as e:
-                log.warning("camera: %s", e)
-                import app_manager
-                app_inst = app_manager.get_current_app()
-                if app_inst and hasattr(app_inst, 'on_capture_complete'):
-                    app_inst.on_capture_complete()
-            finally:
-                self.shared_class.shutter_event.clear()
-
-    def send_captured_jpeg_to_client(self):
-        """Push JPEG over TCP using shared.current_app — no app-specific names here."""
-        srv = self.shared_class.server
-        app = self.shared_class.current_app
-        if srv is None:
-            return
-        pic = self.shared_class.data.get("picture")
-        if not pic:
-            return
-        b64 = base64.standard_b64encode(pic).decode("ascii")
-        payload = {
-            "app": app,
-            "event": "picture",
-            "format": "jpeg",
-            "image_b64": b64,
-            "byte_length": len(pic),
-            "source_bytes": len(pic),
-        }
         try:
-            if not srv.send_json(payload):
-                log.warning("picture: send_json failed (no tcp client?)")
-        except ValueError:
-            log.warning("picture: payload too large to send")
+            from libcamera import controls
+            self.camera.set_controls({
+                "Sharpness": 2.0,
+                "AfMode": controls.AfModeEnum.Continuous,
+            })
+            log.info("camera: controls set (Sharpness 2.0, AfMode Continuous)")
+        except Exception as e:
+            log.warning("camera: could not set Sharpness/AfMode: %s", e)
 
-    def video_loop(self):
-        while self.running:
-            self.shared_class.video_event.wait()
-            if not self.running:
-                break
-            while self.shared_class.video_event.is_set() and self.running:
-                pass
-            self.send_video_to_client()
-
-    def ensure_preview_thread(self):
-        if self._preview_thread is not None and self._preview_thread.is_alive():
+    def ensure_stream_thread(self):
+        if self._stream_thread is not None and self._stream_thread.is_alive():
             return
-        self._preview_running = True
-        self._preview_thread = Thread(target=self._preview_loop, daemon=True)
-        self._preview_thread.start()
+        self._stream_running = True
+        self._stream_thread = Thread(target=self._stream_loop, daemon=True)
+        self._stream_thread.start()
 
-    def _preview_loop(self):
+    def stop_stream_thread(self):
+        self._stream_running = False
+        if self._stream_thread:
+            self._stream_thread.join(timeout=1)
+            self._stream_thread = None
+
+    def _stream_loop(self):
         target_period = 1.0 / 12.0
-        while self._preview_running:
-            if not self.shared_class.phone_live_stream:
+        was_streaming = False
+        while self._stream_running:
+            if not self.shared_class.camera_streaming:
+                if was_streaming:
+                    was_streaming = False
+                    srv = self.shared_class.server
+                    app = self.shared_class.current_app
+                    if srv and srv.connected:
+                        srv.send_json({"app": app, "event": "camera_stopped"})
                 time.sleep(0.05)
                 continue
             srv = self.shared_class.server
             if srv is None or not srv.connected:
                 time.sleep(0.05)
                 continue
+            was_streaming = True
             try:
                 stream = io.BytesIO()
                 with self._capture_lock:
-                    if self._has_lores_stream:
-                        self.camera.capture_file(stream, format="jpeg", name="lores")
-                    else:
-                        self.camera.capture_file(stream, format="jpeg")
+                    self.camera.capture_file(stream, format="jpeg")
                 jpeg = stream.getvalue()
                 if jpeg and not srv.send_binary(jpeg):
-                    log.debug("preview: send_binary skipped (no client)")
+                    log.debug("stream: send_binary skipped (no client)")
             except Exception as e:
-                log.warning("preview: %s", e)
+                log.warning("stream: %s", e)
             time.sleep(target_period)
-
-    def send_video_to_client(self):
-        """Legacy hook — preview is driven by `_preview_loop` + ``SharedClass.phone_live_stream``."""
-        pass
 
 # -- Goggle Button Class --
 class GoggleButton:
@@ -827,6 +757,7 @@ class Display:
             self._has_title_bar = False
             if self.hardware_available:
                 self.oled.fill(0)
+                self.oled.show()
 
     def sleep(self):
         """Blank the panel without touching the frame buffer or app state.

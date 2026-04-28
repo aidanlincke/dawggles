@@ -415,9 +415,9 @@ def perform_unpair_and_restart(shared_class) -> None:
     camera_client = getattr(shared_class, "camera_client", None)
     if camera_client is not None:
         try:
-            camera_client.stop_capture_loop()
+            camera_client.stop_stream_thread()
         except Exception as e:
-            log.warning("unpair cleanup: stop_capture_loop: %s", e)
+            log.warning("unpair cleanup: stop_stream_thread: %s", e)
         camera = getattr(camera_client, "camera", None)
         if camera is not None:
             for method in ("stop", "close"):

@@ -2,9 +2,8 @@
 Translation app — manages its own state, TCP messages, and display hooks.
 
 Modes:
-  default   — idle; press button to capture.
-  capturing — shutter in flight.
-  live      — still sent; preview streaming until user presses button to end session.
+    default — idle; waiting to stream.
+    live    — camera streaming while the app is active.
 """
 from apps.base_app import BaseApp
 
@@ -21,17 +20,7 @@ class TranslationApp(BaseApp):
         self.display_idx = 0
 
     def on_mount(self):
-        if self.shared_class.camera_client and self.shared_class.camera_client.camera:
-            if not self.shared_class.camera_client.running:
-                self.shared_class.camera_client.start_capture_loop()
-        self._trigger_capture()
-
-    def _trigger_capture(self):
-        self.translation_data = None
-        self.translation_groupings = None
-        self.display_idx = 0
-        self.mode = "capturing"
-        self.shared_class.shutter_event.set()
+        self._start_camera_stream()
         self.update_display()
 
     def on_unmount(self):
@@ -72,55 +61,33 @@ class TranslationApp(BaseApp):
         display.oled.show()
 
     def _stop_live_session(self):
-        """End preview, notify phone, clear session — back to idle."""
-        self.shared_class.phone_live_stream = False
+        """Turn camera off, clear session — back to idle. camera_stopped is sent by the stream loop
+        after it finishes its current frame, guaranteeing no stray frames arrive after the signal."""
+        self.shared_class.camera_streaming = False
         self.translation_data = None
         self.translation_groupings = None
         self.display_idx = 0
         self.mode = "default"
-        srv = self.shared_class.server
-        if srv:
-            srv.send_json({"app": self.name, "event": "preview_stopped"})
 
     def on_websocket_disconnect(self):
-        """Phone gone — stop live stream locally (``phone_live_stream`` already cleared by server).
+        """Phone gone — stop camera stream locally (``camera_streaming`` already cleared by server).
         Keep translation data so the display holds whatever it was showing."""
         if self.mode != "live":
             return
         self.mode = "default"
 
-    def _start_live_preview(self):
+    def _start_camera_stream(self):
+        self.translation_data = None
+        self.translation_groupings = None
+        self.display_idx = 0
         self.mode = "live"
-        self.shared_class.phone_live_stream = True
+        self.shared_class.camera_streaming = True
         cc = self.shared_class.camera_client
         if cc:
-            cc.ensure_preview_thread()
+            cc.ensure_stream_thread()
 
     def on_click(self, click_count):
-        if click_count >= 3:
-            from app_manager import switch_to_next_app
-            switch_to_next_app(self.shared_class)
-            return
-
-        with self.shared_class.display_lock:
-            if click_count == 1:
-                import logging
-                logging.info("TranslationApp: Shutter button pressed!")
-                if self.mode == "capturing":
-                    return
-                if self.mode == "live":
-                    self._stop_live_session()
-                self._trigger_capture()
-            elif click_count == 2:
-                if self.mode != "live":
-                    return
-                if self.display_idx > 0:
-                    self.display_idx -= 1
-                    self.update_display()
-
-    def on_capture_complete(self):
-        self._start_live_preview()
-        self.update_display()
+        return
 
     def on_message(self, message):
         if "app" in message and message["app"] != self.name:

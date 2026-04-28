@@ -12,9 +12,8 @@ class GPSApp(BaseApp):
         self.gps_data = None
 
     def on_mount(self):
-        # Stop camera since GPS doesn't need it
-        if self.shared_class.camera_client and self.shared_class.camera_client.running:
-            self.shared_class.camera_client.stop_capture_loop()
+        # Stop camera stream since GPS doesn't need it
+        self.shared_class.camera_streaming = False
         self.update_display()
 
     def on_unmount(self):

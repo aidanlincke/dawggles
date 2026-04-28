@@ -205,11 +205,11 @@ private struct TranslationViewModifier: ViewModifier {
                             let t0 = CFAbsoluteTimeGetCurrent()
                             let response = try await session.translate(src)
                             let dt = CFAbsoluteTimeGetCurrent() - t0
-                            #if DEBUG
                             if dt >= 1.0 {
+                                #if DEBUG
                                 print(#"[LIVE] TranslationTask: live translate SLOW dt=\#(String(format: "%.2f", dt))s chars=\(src.count)"#)
+                                #endif
                             }
-                            #endif
                             print("TranslationViewModifier: live translated=\(response.targetText)")
                             translator.storeLiveTranslation(response.targetText, for: src)
                             m["translated_text"] = response.targetText
@@ -246,7 +246,7 @@ private struct PairingView: View {
             Spacer()
 
             VStack(spacing: 16) {
-                Image(systemName: "visionpro")
+                Image(systemName: "eyeglasses")
                     .font(.system(size: 80))
                     .foregroundStyle(.blue)
 
@@ -465,13 +465,13 @@ private struct PairedView: View {
                                 .disconnectedOverlay(!displayConnected)
                             }
 
-                            let cameraStale = connection.previewImage == nil
+                            let cameraStale = connection.cameraImage == nil
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Camera")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Group {
-                                    if let live = connection.previewImage {
+                                    if let live = connection.cameraImage {
                                         ZStack {
                                             Image(uiImage: live)
                                                 .resizable()
@@ -551,7 +551,7 @@ private struct PairedView: View {
                                         }
                                     } else {
                                         TestPatternView()
-                                            .aspectRatio(4.0 / 3.0, contentMode: .fit)
+                                            .aspectRatio(16.0 / 9.0, contentMode: .fit)
                                     }
                                 }
                                 .clipShape(RoundedRectangle(cornerRadius: 12))

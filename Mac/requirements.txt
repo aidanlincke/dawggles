@@ -1,2 +1,0 @@
-# Mac venv: BLE tools for ble_pair.py (push_client uses stdlib only).
-bleak>=0.21.0

@@ -2,8 +2,7 @@
 //  LiveAlignmentSession.swift
 //  Dawggles
 //
-//  Live preview: throttled full-frame OCR, nearest-center focus, Vision **recognition_confidence** merge so
-//  shaky frames don’t overwrite good text; send full Pi payload only when merged lines change, else `focus` only.
+//  Live preview: throttled full-frame OCR, nearest-center focus; send full Pi payload only when text changes.
 //
 
 import Combine
@@ -60,7 +59,6 @@ final class LiveAlignmentSession: ObservableObject {
 
     /// Last snapshot actually sent to the Pi.
     private var lastPiFingerprint: String?
-    private var lastTranslatedGroupings: [[String: Any]]?
     private var liveTranslateSeq: Int = 0
     private var lastUIFingerprint: String?
     private var lastTranslationEnqueueWall: CFAbsoluteTime = 0
@@ -106,19 +104,13 @@ final class LiveAlignmentSession: ObservableObject {
         liveDetectedGroupings = []
         lastUIFingerprint = nil
         lastPiFingerprint = nil
-        lastTranslatedGroupings = nil
         liveTranslateSeq = 0
         lastTranslationEnqueueWall = 0
     }
 
-    /// Start live translation: OCR runs on preview frames only; requires Pi JPEG stream on `connection`.
     func arm(connection: DawgglesConnection) {
-        disarm()
+        guard tick == nil else { return }
         self.connection = connection
-        #if DEBUG
-        print("[LIVE] LiveAlignment: arm() -> starting OCR timer")
-        #endif
-
         tick = Timer.publish(every: 1.0 / 10.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
@@ -159,9 +151,7 @@ final class LiveAlignmentSession: ObservableObject {
 
     private func handleLiveOCR(groupings raw: [[String: Any]], connection conn: DawgglesConnection) {
         #if DEBUG
-        if ocrSeq % 10 == 0 {
-            print("[LIVE] LiveAlignment: tick seq=\(ocrSeq) rawCount=\(raw.count) isConnected=\(conn.isConnected)")
-        }
+        // Per-tick logging removed to avoid console spam during streaming.
         #endif
         if raw.isEmpty {
             consecutiveAlignmentMisses += 1
@@ -303,7 +293,6 @@ final class LiveAlignmentSession: ObservableObject {
                 // No ROI/focus selection: Pi will default to index 0 if it wants to show a single line.
                 conn.sendTranslationPayload(data: summary, groupings: translatedOut)
                 self.lastPiFingerprint = fingerprint
-                self.lastTranslatedGroupings = translatedOut
                 self.lastSentIndex = nil
                 self.lastSentROIText = nil
                 #if DEBUG
@@ -314,59 +303,4 @@ final class LiveAlignmentSession: ObservableObject {
         }
     }
 
-    // MARK: - Confidence merge + similarity
-
-    private static func recognitionConfidence(from d: [String: Any]) -> Double {
-        if let n = d["recognition_confidence"] as? Double { return n }
-        if let n = d["recognition_confidence"] as? Float { return Double(n) }
-        if let n = d["recognition_confidence"] as? NSNumber { return n.doubleValue }
-        return 1
-    }
-
-    /// When band count matches, per-index merge; otherwise take fresh OCR (layout changed).
-    private static func mergeCommittedWithNew(previous: [[String: Any]]?, new: [[String: Any]]) -> [[String: Any]] {
-        guard let prev = previous, prev.count == new.count, !new.isEmpty else { return new }
-        return zip(prev, new).map { mergeGroupingDict(old: $0, new: $1) }
-    }
-
-    private static func mergeGroupingDict(old: [String: Any], new: [String: Any]) -> [String: Any] {
-        let oT = (old["translated_text"] as? String) ?? ""
-        let nT = (new["translated_text"] as? String) ?? ""
-        let oC = recognitionConfidence(from: old)
-        let nC = recognitionConfidence(from: new)
-        if oT.isEmpty { return new }
-        if nT.isEmpty { return old }
-        if stringsSimilar(oT, nT) {
-            return nC >= oC ? new : old
-        }
-        if nC >= oC + 0.12 {
-            return new
-        }
-        return old
-    }
-
-    private static func normalizeForCompare(_ s: String) -> String {
-        s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
-
-    private static func stringsSimilar(_ a: String, _ b: String) -> Bool {
-        let x = normalizeForCompare(a)
-        let y = normalizeForCompare(b)
-        if x.isEmpty || y.isEmpty { return false }
-        if x == y { return true }
-        if x.contains(y) || y.contains(x) { return true }
-        let xs = Set(x.split(separator: " ").map(String.init))
-        let ys = Set(y.split(separator: " ").map(String.init))
-        let inter = xs.intersection(ys).count
-        let uni = xs.union(ys).count
-        guard uni > 0 else { return false }
-        return Float(inter) / Float(uni) >= 0.55
-    }
-
-    private static func groupingTextsFingerprint(_ g: [[String: Any]]) -> String {
-        g.map { ($0["translated_text"] as? String) ?? "" }.joined(separator: "\u{1e}")
-    }
 }

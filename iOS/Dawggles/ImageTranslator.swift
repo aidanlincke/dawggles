@@ -154,13 +154,13 @@ class ImageTranslator: ObservableObject {
                 queuedLiveGroupings = nil
                 queuedCompletion = nil
             } else {
-            print("ImageTranslator: translation in progress, queuing batch")
-            #if DEBUG
-            print("[LIVE] ImageTranslator: queueing translation rows=\(groupings.count)")
-            #endif
-            queuedLiveGroupings = groupings
-            queuedCompletion = completion
-            return
+                print("ImageTranslator: translation in progress, queuing batch")
+                #if DEBUG
+                print("[LIVE] ImageTranslator: queueing translation rows=\(groupings.count)")
+                #endif
+                queuedLiveGroupings = groupings
+                queuedCompletion = completion
+                return
             }
         }
         
@@ -172,11 +172,13 @@ class ImageTranslator: ObservableObject {
         print("ImageTranslator: enqueueLiveGroupings #\(triggerCount) with \(groupings.count) items — STARTING TRANSLATION")
         #if DEBUG
         print("[LIVE] ImageTranslator: START live translate #\(triggerCount) rows=\(groupings.count)")
+        #endif
         if let first = groupings.first,
            let t = first["translated_text"] as? String {
+            #if DEBUG
             print("[LIVE] ImageTranslator: first row src sample=\(t.prefix(60))")
+            #endif
         }
-        #endif
         liveTranslationTrigger = UUID()
     }
 

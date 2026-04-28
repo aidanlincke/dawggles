@@ -8,14 +8,12 @@ enum ConnectionStatus: Equatable {
     case disconnected, connecting, connected
 }
 
-/// WebSocket client to the Pi: still images (JSON), live JPEGs (binary), OCR/groupings back, active line index.
+/// WebSocket client to the Pi: camera stream JPEGs (binary), OCR/groupings back, active line index.
 class DawgglesConnection: ObservableObject {
     static let shared = DawgglesConnection()
 
     @Published var isConnected: Bool = false
-    @Published var receivedImage: UIImage? = nil
-    @Published private(set) var previewImage: UIImage? = nil
-    @Published var receivedTranslation: String?
+    @Published private(set) var cameraImage: UIImage? = nil
     @Published private(set) var oledImage: UIImage? = nil
 
     weak var liveAlignment: LiveAlignmentSession?
@@ -43,16 +41,10 @@ class DawgglesConnection: ObservableObject {
     private let defaultHost = "10.42.0.1"
     private let maxRetryAttempts = 8
 
-    private var lastPreviewWall: CFAbsoluteTime = 0
-    private let previewMinInterval: TimeInterval = 1.0 / 15.0
-    private var previewSeq: Int = 0
-
-    // MARK: Live stream + alignment (Pi binary JPEGs)
-
-    /// After shutter still, wait for the first preview JPEG before arming live OCR (no still-frame OCR).
-    private var pendingTranslationLiveArm = false
-    /// Pi sent `preview_stopped` or we disconnected — don't arm alignment when OCR completes late.
-    private var suppressAlignmentArmUntilNextStill = false
+    private var streamSeq: Int = 0
+    private let streamDecodeQueue = DispatchQueue(label: "DawgglesConnection.streamDecode", qos: .userInteractive)
+    private var pendingFrameData: Data? = nil
+    private var isDecodingFrame = false
 
     private init() {
         startPathMonitoring()
@@ -126,22 +118,21 @@ class DawgglesConnection: ObservableObject {
         connection?.cancel()
         connection = nil
         activeHost = nil
-        handlePiLiveStreamEnded()
+        handleCameraStopped()
     }
 
-    private func tearDownLiveAlignmentAndPreview() {
-        pendingTranslationLiveArm = false
-        previewImage = nil
+    private func tearDownCameraStream() {
+        cameraImage = nil
         liveAlignment?.disarm()
+        streamDecodeQueue.async { [weak self] in self?.pendingFrameData = nil }
         #if DEBUG
-        print("[LIVE] DawgglesConnection: preview torn down (alignment disarmed, preview cleared)")
+        print("[LIVE] DawgglesConnection: camera stream torn down")
         #endif
     }
 
     /// Pi ended the JPEG stream (or equivalent): stop alignment and clear live UI state.
-    private func handlePiLiveStreamEnded() {
-        suppressAlignmentArmUntilNextStill = true
-        tearDownLiveAlignmentAndPreview()
+    private func handleCameraStopped() {
+        tearDownCameraStream()
     }
 
     // MARK: - WebSocket
@@ -390,7 +381,7 @@ class DawgglesConnection: ObservableObject {
                 DispatchQueue.main.async {
                     self?.isConnected = false
                     self?.activeHost = nil
-                    self?.handlePiLiveStreamEnded()
+                    self?.handleCameraStopped()
                     #if DEBUG
                     print("[LIVE] DawgglesConnection: receiveMessage error -> disconnected, ending live stream")
                     #endif
@@ -406,55 +397,12 @@ class DawgglesConnection: ObservableObject {
                     }
                 case .binary:
                     guard let self else { break }
-                    let now = CFAbsoluteTimeGetCurrent()
-                    self.previewSeq += 1
-                    #if DEBUG
-                    print("[LIVE] DawgglesConnection: preview JPEG #\(self.previewSeq) bytes=\(data.count)")
-                    #endif
-                    
-                    #if DEBUG
-                    // Quick JPEG integrity check: SOI (FFD8) at start, EOI (FFD9) at end.
-                    // A missing EOI is a strong signal the frame was truncated mid-stream.
-                    let hasSOI: Bool = {
-                        guard data.count >= 2 else { return false }
-                        let p = data.prefix(2)
-                        return p[p.startIndex] == 0xFF && p[p.index(after: p.startIndex)] == 0xD8
-                    }()
-                    let hasEOI: Bool = {
-                        guard data.count >= 2 else { return false }
-                        let s = data.suffix(2)
-                        return s[s.startIndex] == 0xFF && s[s.index(after: s.startIndex)] == 0xD9
-                    }()
-                    if !hasSOI || !hasEOI {
-                        let first4 = data.prefix(4).map { String(format: "%02X", $0) }.joined(separator: " ")
-                        let last4 = data.suffix(4).map { String(format: "%02X", $0) }.joined(separator: " ")
-                        print("[LIVE] DawgglesConnection: ⚠︎ JPEG markers suspicious seq=\(self.previewSeq) SOI=\(hasSOI) EOI=\(hasEOI) first4=[\(first4)] last4=[\(last4)]")
-                    }
-                    #endif
-
-                    if now - self.lastPreviewWall >= self.previewMinInterval,
-                       let image = UIImage(data: data) {
-                        self.lastPreviewWall = now
-                        DispatchQueue.main.async { [weak self] in
-                            guard let self else { return }
-                            if self.pendingTranslationLiveArm, !self.suppressAlignmentArmUntilNextStill {
-                                self.pendingTranslationLiveArm = false
-                                self.liveAlignment?.arm(connection: self)
-                                #if DEBUG
-                                print("[LIVE] DawgglesConnection: first preview after still -> arming live alignment")
-                                #endif
-                            }
-                            self.previewImage = image
-                            self.liveAlignment?.onLiveFrame(image)
-                        }
-                    } else if now - self.lastPreviewWall < self.previewMinInterval {
-                        #if DEBUG
-                        print("[LIVE] DawgglesConnection: preview JPEG throttled (minInterval=\(String(format: "%.3f", self.previewMinInterval))s)")
-                        #endif
-                    } else {
-                        #if DEBUG
-                        print("[LIVE] DawgglesConnection: preview JPEG decode failed (bytes=\(data.count)) seq=\(self.previewSeq)")
-                        #endif
+                    self.streamSeq += 1
+                    // Per-frame logging removed to avoid console spam during streaming.
+                    self.streamDecodeQueue.async { [weak self] in
+                        guard let self else { return }
+                        self.pendingFrameData = data
+                        if !self.isDecodingFrame { self.drainPreviewMailbox() }
                     }
                 default:
                     break
@@ -462,6 +410,33 @@ class DawgglesConnection: ObservableObject {
             }
             self?.receiveMessage()
         }
+    }
+
+    // Called only on streamDecodeQueue. Grabs the latest pending frame, decodes it,
+    // publishes to main, then re-checks for another frame that may have arrived during decode.
+    private func drainPreviewMailbox() {
+        guard let data = pendingFrameData else {
+            isDecodingFrame = false
+            return
+        }
+        pendingFrameData = nil
+        isDecodingFrame = true
+
+        guard let image = UIImage(data: data) else {
+            #if DEBUG
+            print("[LIVE] DawgglesConnection: camera JPEG decode failed bytes=\(data.count)")
+            #endif
+            streamDecodeQueue.async { [weak self] in self?.drainPreviewMailbox() }
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.liveAlignment?.arm(connection: self)
+            self.cameraImage = image
+            self.liveAlignment?.onLiveFrame(image)
+        }
+        streamDecodeQueue.async { [weak self] in self?.drainPreviewMailbox() }
     }
 
     private func handleJSON(_ text: String) {
@@ -476,60 +451,14 @@ class DawgglesConnection: ObservableObject {
             return
         }
 
-        if obj["event"] as? String == "preview_stopped" {
-            DispatchQueue.main.async { self.handlePiLiveStreamEnded() }
+        if obj["event"] as? String == "camera_stopped" {
+            DispatchQueue.main.async { self.handleCameraStopped() }
             #if DEBUG
-            print("[LIVE] DawgglesConnection: received preview_stopped")
+            print("[LIVE] DawgglesConnection: received camera_stopped")
             #endif
             return
         }
 
-        if obj["event"] as? String == "picture",
-           let b64 = obj["image_b64"] as? String,
-           let imageData = Data(base64Encoded: b64),
-           let image = UIImage(data: imageData) {
-            DispatchQueue.main.async {
-                self.receivedImage = image
-                self.receivedTranslation = nil
-                self.suppressAlignmentArmUntilNextStill = false
-            }
-            #if DEBUG
-            print("[LIVE] DawgglesConnection: received still picture (bytes=\(imageData.count))")
-            #endif
-            let app = obj["app"] as? String ?? "translation"
-            if app == "translation" {
-                Task { await self.beginTranslationLiveSessionAfterStill() }
-            }
-        } else if let groupings = obj["groupings"] as? [[String: Any]] {
-            #if DEBUG
-            print("[LIVE] DawgglesConnection: received groupings from socket count=\(groupings.count)")
-            #endif
-            // Some senders may stream groupings rapidly; guard against overlapping translation tasks.
-            // The live-preview path uses `LiveAlignmentSession` + `enqueueLiveGroupings` instead.
-            DispatchQueue.main.async {
-                // If live alignment is active, ignore external groupings to avoid fighting the live OCR loop.
-                if self.liveAlignment != nil {
-                    #if DEBUG
-                    print("[LIVE] DawgglesConnection: ignoring socket groupings (live alignment active)")
-                    #endif
-                    return
-                }
-                ImageTranslator.shared.beginExternalLiveGroupingsTranslation(groupings: groupings)
-            }
-        }
-    }
-
-    /// Disarm prior session; Pi shows "Processing…" until the first live-frame OCR payload arrives.
-    private func beginTranslationLiveSessionAfterStill() async {
-        await MainActor.run {
-            self.liveAlignment?.disarm()
-            if !self.suppressAlignmentArmUntilNextStill {
-                self.pendingTranslationLiveArm = true
-            }
-        }
-        #if DEBUG
-        print("[LIVE] DawgglesConnection: beginTranslationLiveSessionAfterStill -> pendingTranslationLiveArm=\(pendingTranslationLiveArm)")
-        #endif
     }
 
     // MARK: - OLED decode
@@ -591,8 +520,7 @@ class DawgglesConnection: ObservableObject {
         hasScheduledRetryForCurrentConnection = false
         DispatchQueue.main.async {
             self.isConnected = false
-            self.receivedTranslation = nil
-            self.handlePiLiveStreamEnded()
+            self.handleCameraStopped()
         }
     }
 }

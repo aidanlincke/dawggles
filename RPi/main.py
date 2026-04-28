@@ -127,12 +127,12 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        # Stop the capture thread first so nothing redraws over us, then blank the
+        # Stop the stream thread first so nothing redraws over us, then blank the
         # OLED last. SSD1306 pixels latch — if we exit before clearing, the frame
         # stays lit until next power-up.
         if shared.camera_client:
             try:
-                shared.camera_client.stop_capture_loop()
+                shared.camera_client.stop_stream_thread()
             except Exception:
                 pass
             if shared.camera_client.camera:
@@ -142,6 +142,7 @@ def main() -> None:
         if shared.display:
             try:
                 shared.display.reset_display()
+                shared.display.sleep()
             except Exception:
                 pass
 
