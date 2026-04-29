@@ -14,6 +14,7 @@ struct DawgglesApp: App {
             ContentView()
                 .environmentObject(DawgglesConnection.shared)
                 .environmentObject(DawgglesAccessorySetup.shared)
+                .environmentObject(LocationManager.shared)
         }
     }
 }

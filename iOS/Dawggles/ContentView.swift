@@ -7,6 +7,7 @@ import SwiftUI
 import Translation
 import Foundation
 import Combine
+import MapKit
 
 // MARK: - Translation Settings
 
@@ -309,7 +310,8 @@ private struct PairingView: View {
 private struct PairedView: View {
     @EnvironmentObject private var connection: DawgglesConnection
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
-    
+    @EnvironmentObject private var locationManager: LocationManager
+
     @StateObject private var liveAlignment = LiveAlignmentSession()
     @ObservedObject private var translator = ImageTranslator.shared
     @EnvironmentObject var translationSettings: TranslationSettings
@@ -373,6 +375,7 @@ private struct PairedView: View {
             }
             .onAppear {
                 connection.liveAlignment = liveAlignment
+                locationManager.requestAlwaysAuthorization()
             }
             .onDisappear {
                 connection.liveAlignment = nil
@@ -406,8 +409,7 @@ private struct PairedView: View {
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 10)
                                     .frame(maxWidth: .infinity)
-                                    .background(.ultraThinMaterial)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    .background(AdaptiveFieldBackground())
                             }
                             .buttonStyle(.plain)
 
@@ -429,13 +431,15 @@ private struct PairedView: View {
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 10)
                                     .frame(maxWidth: .infinity)
-                                    .background(.ultraThinMaterial)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    .background(AdaptiveFieldBackground())
                             }
                             .buttonStyle(.plain)
                         }
 
                     }
+
+                    // Navigation card
+                    NavigationCard()
 
                     // Presentation mode card
                     if presentationMode {
@@ -615,9 +619,284 @@ private struct SettingsSheet: View {
     }
 }
 
+// MARK: - Navigation Card
+
+/// A single suggestion shown under the address textfield. Backed either by an
+/// `MKLocalSearchCompletion` (autocompletion) or a resolved `MKMapItem` (a
+/// concrete nearby place such as the closest Starbucks).
+struct AddressSuggestion: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
+    let subtitle: String
+    let distanceMeters: CLLocationDistance?
+
+    var formattedDistance: String? {
+        guard let d = distanceMeters else { return nil }
+        let formatter = MKDistanceFormatter()
+        formatter.unitStyle = .abbreviated
+        return formatter.string(fromDistance: d)
+    }
+
+    static func == (lhs: AddressSuggestion, rhs: AddressSuggestion) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+@MainActor
+private final class AddressCompleter: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    @Published var query: String = "" {
+        didSet { updateQuery() }
+    }
+    @Published private(set) var suggestions: [AddressSuggestion] = []
+
+    private let completer = MKLocalSearchCompleter()
+    private var nearbySearch: MKLocalSearch?
+    private var locationCancellable: AnyCancellable?
+    private weak var locationManager: LocationManager?
+
+    override init() {
+        super.init()
+        completer.delegate = self
+        completer.resultTypes = [.address, .pointOfInterest]
+    }
+
+    /// Wires the completer to a `LocationManager` so suggestions are biased to
+    /// the user's current area and POI queries resolve to the nearest match.
+    func bind(to manager: LocationManager) {
+        guard locationManager !== manager else { return }
+        locationManager = manager
+        locationCancellable = manager.$location
+            .compactMap { $0 }
+            .removeDuplicates(by: { $0.distance(from: $1) < 50 })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] loc in
+                self?.applyRegion(for: loc.coordinate)
+                self?.updateQuery()
+            }
+
+        if let loc = manager.location {
+            applyRegion(for: loc.coordinate)
+        }
+    }
+
+    private func applyRegion(for coordinate: CLLocationCoordinate2D) {
+        completer.region = MKCoordinateRegion(
+            center: coordinate,
+            latitudinalMeters: 50_000,
+            longitudinalMeters: 50_000
+        )
+    }
+
+    private func updateQuery() {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        nearbySearch?.cancel()
+
+        guard !trimmed.isEmpty else {
+            suggestions = []
+            completer.cancel()
+            return
+        }
+
+        completer.queryFragment = trimmed
+
+        // In parallel, run a region-scoped MKLocalSearch so that queries like
+        // "Starbucks" surface the actual closest result rather than just a
+        // generic completion.
+        if let userLocation = locationManager?.location {
+            performNearbySearch(for: trimmed, around: userLocation)
+        }
+    }
+
+    private func performNearbySearch(for term: String, around location: CLLocation) {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = term
+        request.resultTypes = [.address, .pointOfInterest]
+        request.region = MKCoordinateRegion(
+            center: location.coordinate,
+            latitudinalMeters: 50_000,
+            longitudinalMeters: 50_000
+        )
+        let search = MKLocalSearch(request: request)
+        nearbySearch = search
+        search.start { [weak self] response, _ in
+            guard let self else { return }
+            guard let items = response?.mapItems, !items.isEmpty else { return }
+            let sorted = items
+                .map { item -> (MKMapItem, CLLocationDistance) in
+                    let placemarkLocation = item.placemark.location ?? CLLocation(
+                        latitude: item.placemark.coordinate.latitude,
+                        longitude: item.placemark.coordinate.longitude
+                    )
+                    return (item, placemarkLocation.distance(from: location))
+                }
+                .sorted { $0.1 < $1.1 }
+                .prefix(5)
+
+            let nearby: [AddressSuggestion] = sorted.map { item, distance in
+                AddressSuggestion(
+                    title: item.name ?? item.placemark.title ?? term,
+                    subtitle: Self.formatAddress(item.placemark),
+                    distanceMeters: distance
+                )
+            }
+
+            Task { @MainActor in
+                self.mergeNearby(nearby)
+            }
+        }
+    }
+
+    private func mergeNearby(_ nearby: [AddressSuggestion]) {
+        // Nearby (real, sorted-by-distance) results take precedence.
+        var merged = nearby
+        let existingTitles = Set(merged.map { $0.title.lowercased() })
+        for item in suggestions where !existingTitles.contains(item.title.lowercased()) {
+            merged.append(item)
+            if merged.count >= 6 { break }
+        }
+        suggestions = merged
+    }
+
+    private static func formatAddress(_ placemark: MKPlacemark) -> String {
+        let parts: [String?] = [
+            [placemark.subThoroughfare, placemark.thoroughfare]
+                .compactMap { $0 }
+                .joined(separator: " ")
+                .nonEmpty,
+            placemark.locality,
+            placemark.administrativeArea
+        ]
+        return parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+
+    nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        let results = completer.results
+        Task { @MainActor in
+            let mapped = results.prefix(8).map {
+                AddressSuggestion(title: $0.title, subtitle: $0.subtitle, distanceMeters: nil)
+            }
+            // Preserve any nearby results we already merged at the top.
+            let nearby = self.suggestions.filter { $0.distanceMeters != nil }
+            let nearbyTitles = Set(nearby.map { $0.title.lowercased() })
+            let completions = mapped.filter { !nearbyTitles.contains($0.title.lowercased()) }
+            self.suggestions = nearby + completions
+        }
+    }
+
+    nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        Task { @MainActor in
+            self.suggestions = self.suggestions.filter { $0.distanceMeters != nil }
+        }
+    }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
+}
+
+private struct NavigationCard: View {
+    @EnvironmentObject private var locationManager: LocationManager
+    @StateObject private var completer = AddressCompleter()
+    @FocusState private var isFocused: Bool
+    @State private var selectedTitle: String?
+
+    var body: some View {
+        DashboardCard {
+            HStack(spacing: 12) {
+                Image(systemName: "location.fill")
+                    .foregroundStyle(.blue)
+                Text("Navigation")
+                    .font(.subheadline)
+                    .bold()
+            }
+        } content: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Enter an address", text: $completer.query)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled(true)
+                        .submitLabel(.search)
+                        .focused($isFocused)
+                        .onChange(of: completer.query) { _ in
+                            selectedTitle = nil
+                        }
+                    if !completer.query.isEmpty {
+                        Button {
+                            completer.query = ""
+                            selectedTitle = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(AdaptiveFieldBackground())
+
+                let visible = Array(completer.suggestions.prefix(5))
+                if !visible.isEmpty, isFocused, selectedTitle != completer.query {
+                    VStack(spacing: 0) {
+                        ForEach(Array(visible.enumerated()), id: \.element.id) { index, suggestion in
+                            Button {
+                                let combined = suggestion.subtitle.isEmpty
+                                    ? suggestion.title
+                                    : "\(suggestion.title), \(suggestion.subtitle)"
+                                completer.query = combined
+                                selectedTitle = combined
+                                isFocused = false
+                            } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: suggestion.distanceMeters != nil ? "mappin.circle.fill" : "mappin.and.ellipse")
+                                        .foregroundStyle(.blue)
+                                        .padding(.top, 2)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(suggestion.title)
+                                            .font(.body)
+                                            .foregroundStyle(.primary)
+                                        if !suggestion.subtitle.isEmpty {
+                                            Text(suggestion.subtitle)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                    if let distance = suggestion.formattedDistance {
+                                        Text(distance)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+
+                            if index < visible.count - 1 {
+                                Divider()
+                                    .padding(.leading, 40)
+                            }
+                        }
+                    }
+                    .background(AdaptiveFieldBackground())
+                }
+            }
+        }
+        .onAppear {
+            completer.bind(to: locationManager)
+        }
+    }
+}
+
 // MARK: - Dashboard Card
 
 private struct DashboardCard<Header: View, Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
     let header: Header
     let content: Content
 
@@ -633,8 +912,23 @@ private struct DashboardCard<Header: View, Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial)
+        .background {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(colorScheme == .dark ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color(white: 0.93)))
+        }
         .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+// MARK: - Adaptive inner field background
+
+private struct AdaptiveFieldBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+    var cornerRadius: CGFloat = 10
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .fill(colorScheme == .dark ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color(white: 0.86)))
     }
 }
 

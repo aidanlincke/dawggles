@@ -16,6 +16,21 @@
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Dawggles uses Bluetooth to pair with your Dawggles device and connect it to Wi-Fi.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Dawggles uses your location to power nearby search and turn-by-turn navigation on your goggles.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Dawggles needs your location while the app is in the background so navigation and nearby search keep working when the app is closed.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Dawggles needs your location while the app is in the background so navigation and nearby search keep working when the app is closed.</string>
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>NavigationSearch</key>
+		<string>Precise location is required to find the nearest place when you search.</string>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>NSAccessorySetupKitSupports</key>
 	<array>
 		<string>Bluetooth</string>
