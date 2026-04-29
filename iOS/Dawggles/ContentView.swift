@@ -11,18 +11,23 @@ import Combine
 // MARK: - Translation Settings
 
 class TranslationSettings: ObservableObject {
-    static let availableLanguages = ["Auto", "English", "Spanish", "Chinese", "French", "German", "Japanese", "Korean"]
-    static let languageCodes = ["", "en", "es", "zh", "fr", "de", "ja", "ko"]
-    
+    // Source: all Vision-supported languages (origin text can be anything)
+    static let sourceLanguages = ["Auto", "English", "Spanish", "Chinese", "French", "German", "Japanese", "Korean"]
+    static let sourceLanguageCodes = ["", "en", "es", "zh", "fr", "de", "ja", "ko"]
+
+    // Target: only Latin-script languages that render correctly on the OLED display
+    static let targetLanguages = ["English", "Spanish", "French", "German"]
+    static let targetLanguageCodes = ["en", "es", "fr", "de"]
+
     @Published var selectedSourceIndex = 1 // English
-    @Published var selectedTargetIndex = 2 // Spanish
-    
+    @Published var selectedTargetIndex = 1 // Spanish
+
     var sourceLanguage: Locale.Language? {
-        selectedSourceIndex == 0 ? nil : Locale.Language(identifier: Self.languageCodes[selectedSourceIndex])
+        selectedSourceIndex == 0 ? nil : Locale.Language(identifier: Self.sourceLanguageCodes[selectedSourceIndex])
     }
-    
+
     var targetLanguage: Locale.Language {
-        Locale.Language(identifier: Self.languageCodes[selectedTargetIndex])
+        Locale.Language(identifier: Self.targetLanguageCodes[selectedTargetIndex])
     }
 }
 
@@ -84,7 +89,7 @@ private struct TranslationViewModifier: ViewModifier {
             }
             .onChange(of: settings.selectedSourceIndex) {
                 translator.clearLiveTranslationCache()
-                let sourceCode = $0 == 0 ? "auto" : TranslationSettings.languageCodes[$0]
+                let sourceCode = $0 == 0 ? "auto" : TranslationSettings.sourceLanguageCodes[$0]
                 print("TranslationViewModifier: source changed to \(sourceCode)")
                 #if DEBUG
                 print("[LIVE] TranslationViewModifier: sourceIndex=\($0) sourceCode=\(sourceCode)")
@@ -94,7 +99,7 @@ private struct TranslationViewModifier: ViewModifier {
             }
             .onChange(of: settings.selectedTargetIndex) {
                 translator.clearLiveTranslationCache()
-                let targetCode = TranslationSettings.languageCodes[$0]
+                let targetCode = TranslationSettings.targetLanguageCodes[$0]
                 print("TranslationViewModifier: target changed to \(targetCode)")
                 #if DEBUG
                 print("[LIVE] TranslationViewModifier: targetIndex=\($0) targetCode=\(targetCode)")
@@ -114,8 +119,8 @@ private struct TranslationViewModifier: ViewModifier {
                     #endif
                     configuration?.invalidate()
                 }
-                let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
-                let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
+                let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.sourceLanguageCodes[settings.selectedSourceIndex]
+                let targetCode = TranslationSettings.targetLanguageCodes[settings.selectedTargetIndex]
                 print("TranslationViewModifier: starting translation with source=\(sourceCode) target=\(targetCode)")
             }
             .onChange(of: translator.liveTranslationTrigger) {
@@ -130,8 +135,8 @@ private struct TranslationViewModifier: ViewModifier {
                     #endif
                     configuration?.invalidate()
                 }
-                let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.languageCodes[settings.selectedSourceIndex]
-                let targetCode = TranslationSettings.languageCodes[settings.selectedTargetIndex]
+                let sourceCode = settings.selectedSourceIndex == 0 ? "auto" : TranslationSettings.sourceLanguageCodes[settings.selectedSourceIndex]
+                let targetCode = TranslationSettings.targetLanguageCodes[settings.selectedTargetIndex]
                 print("TranslationViewModifier: starting live translation with source=\(sourceCode) target=\(targetCode)")
             }
             .translationTask(prefetchConfiguration) { session in
@@ -390,12 +395,12 @@ private struct PairedView: View {
                         HStack(spacing: 0) {
                             Menu {
                                 Picker("From", selection: $translationSettings.selectedSourceIndex) {
-                                    ForEach(0..<TranslationSettings.availableLanguages.count, id: \.self) { index in
-                                        Text(TranslationSettings.availableLanguages[index]).tag(index)
+                                    ForEach(0..<TranslationSettings.sourceLanguages.count, id: \.self) { index in
+                                        Text(TranslationSettings.sourceLanguages[index]).tag(index)
                                     }
                                 }
                             } label: {
-                                Text(TranslationSettings.availableLanguages[translationSettings.selectedSourceIndex])
+                                Text(TranslationSettings.sourceLanguages[translationSettings.selectedSourceIndex])
                                     .font(.body)
                                     .fontWeight(.medium)
                                     .padding(.horizontal, 14)
@@ -413,12 +418,12 @@ private struct PairedView: View {
 
                             Menu {
                                 Picker("To", selection: $translationSettings.selectedTargetIndex) {
-                                    ForEach(1..<TranslationSettings.availableLanguages.count, id: \.self) { index in
-                                        Text(TranslationSettings.availableLanguages[index]).tag(index)
+                                    ForEach(0..<TranslationSettings.targetLanguages.count, id: \.self) { index in
+                                        Text(TranslationSettings.targetLanguages[index]).tag(index)
                                     }
                                 }
                             } label: {
-                                Text(TranslationSettings.availableLanguages[translationSettings.selectedTargetIndex])
+                                Text(TranslationSettings.targetLanguages[translationSettings.selectedTargetIndex])
                                     .font(.body)
                                     .fontWeight(.medium)
                                     .padding(.horizontal, 14)

@@ -21,8 +21,8 @@ Reset pin is left disconnected.
 
 | Button        | RPi physical pin | GPIO |
 |---------------|------------------|------|
-| App action (shutter, single press = take photo) | 7  | GPIO 4  |
-| Cycle apps    | 16               | GPIO 23 |
+| Next          | 7                | GPIO 4  |
+| Back          | 16               | GPIO 23 |
 
 Both buttons should be wired between the GPIO pin and GND. `gpiozero` enables the internal pull-up resistor automatically.
 

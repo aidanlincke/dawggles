@@ -26,7 +26,7 @@ import sys
 
 log = logging.getLogger(__name__)
 
-# Add RPi directory to path so adafruit_framebuf can find font5x8.bin
+# Add RPi directory to path so adafruit_framebuf can find font files
 import os
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
@@ -41,8 +41,8 @@ class SharedClass:
     self.data = {}  # Generic data storage
     self.server = None   # Set by app_manager during initialize_system
     self.display = None  # Set by app_manager during initialize_system
-    self.button = None   # App action button, set by app_manager during initialize_system
-    self.cycle_button = None # App cycling button
+    self.button = None       # Next button, set by app_manager during initialize_system
+    self.cycle_button = None # Back button
     self.camera_client = None  # Set by app_manager during initialize_system
     self.display_lock = Lock()
     # When True, ``CameraClient`` sends JPEG frames to the phone over WebSocket (binary).
@@ -742,6 +742,21 @@ class Display:
         self.oled.hline(0, self.HEADER_DIVIDER_Y, self.oled.width, 1)
         self._draw_status_bar()
 
+    # Menu item row height and first-item y-offset (relative to HEADER_CONTENT_START_Y).
+    MENU_ITEM_HEIGHT = 12
+    MENU_ITEM_OFFSET = 2  # extra padding below the divider
+
+    def draw_menu(self, title: str, items: list, selected_idx: int):
+        """Standard scrollable menu. Call from render_display (lock already held).
+        Draws header + one "> Label" row per item, all in the same style."""
+        self.oled.fill(0)
+        self.draw_app_header(title)
+        base_y = self.HEADER_CONTENT_START_Y + self.MENU_ITEM_OFFSET
+        for i, item in enumerate(items):
+            prefix = ">" if i == selected_idx else " "
+            self.oled.text(f"{prefix} {item}", 0, base_y + i * self.MENU_ITEM_HEIGHT, 1)
+        self.oled.show()
+
     def update_display(self, data):
         with self.display_lock:
             self.display_data.update(data)
@@ -755,9 +770,8 @@ class Display:
                 self.temp_message_timer = None
             self.display_data = {}
             self._has_title_bar = False
-            if self.hardware_available:
-                self.oled.fill(0)
-                self.oled.show()
+            # Do NOT push a blank frame here — the next render overwrites the buffer
+            # atomically, avoiding the black flash between screen transitions.
 
     def sleep(self):
         """Blank the panel without touching the frame buffer or app state.

@@ -79,9 +79,9 @@ def main() -> None:
     shared = SharedClass()
     shared.display = Display(shared)
 
-    # Action button initialised early — needed for pairing code confirmation.
+    # Next button initialised early — needed for pairing code confirmation.
     shared.button = GoggleButton(shared_class=shared, pin=4, button_callback=None)
-    # Cycle button initialised early — used as "back/cancel" during pairing.
+    # Back button initialised early — used as "back/cancel" during pairing.
     shared.cycle_button = GoggleButton(shared_class=shared, pin=23, button_callback=None)
 
     # ── Always-on WebSocket ─────────────────────────────────────────────────

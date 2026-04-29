@@ -110,7 +110,7 @@ class DawgglesAgent(dbus.service.Object):
     """
     BlueZ agent with capability "DisplayYesNo".
     Shows the Numeric Comparison passkey on the OLED and waits for button input:
-    front/action button confirms, back/cycle button rejects.
+    Next button confirms, Back button rejects.
     If no choice is made, confirmation times out after 30 seconds.
     """
 

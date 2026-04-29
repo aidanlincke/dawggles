@@ -2,13 +2,12 @@
 import logging
 
 from apps.translation_app import TranslationApp
-from apps.live_captions_app import LiveCaptionsApp
 from apps.gps_app import GPSApp
 from apps.settings_app import SettingsApp
 
 log = logging.getLogger(__name__)
 
-_APP_CLASSES = [TranslationApp, GPSApp, LiveCaptionsApp, SettingsApp]
+_APP_CLASSES = [TranslationApp, GPSApp, SettingsApp]
 
 _selected = 0
 
@@ -30,17 +29,12 @@ def show_home_screen(shared):
 
 def _render(shared):
     d = shared.display
+    labels = [cls.label for cls in _APP_CLASSES]
     if not d.hardware_available:
-        log.info("Home: %s (cursor=%d)", [cls.label for cls in _APP_CLASSES], _selected)
+        log.info("Home: %s (cursor=%d)", labels, _selected)
         return
     with d.display_lock:
-        d.oled.fill(0)
-        d.draw_app_header("Home")
-        for i, cls in enumerate(_APP_CLASSES):
-            y = 16 + i * 12
-            prefix = ">" if i == _selected else " "
-            d.oled.text(f"{prefix} {cls.label}", 0, y, 1)
-        d.oled.show()
+        d.draw_menu("Home", labels, _selected)
 
 
 def _on_scroll(click_count, shared):
@@ -54,9 +48,10 @@ def _on_select(click_count, shared):
     if click_count > 0:
         app_key = _APP_CLASSES[_selected].name
         from app_manager import start_app
-        start_app(app_key, shared, shared.button, shared.server)
-        # start_app rewires shared.button → app.on_click; wire cycle button → back home
-        shared.cycle_button.update_callback(lambda clicks: _go_home(clicks, shared))
+        # Pass _go_home as back_callback; start_app wires it before on_mount so the
+        # app can override it (e.g. TranslationApp replaces it with submenu cycling).
+        start_app(app_key, shared, shared.button, shared.server,
+                  back_callback=lambda clicks: _go_home(clicks, shared))
 
 
 def _go_home(click_count, shared):
