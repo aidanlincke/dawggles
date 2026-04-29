@@ -499,6 +499,7 @@ class Display:
         o.vline(battery_x + 9, top_y + 1, 5, 1)
         o.pixel(battery_x + 10, top_y + 2, 1)
         o.pixel(battery_x + 10, top_y + 3, 1)
+        o.pixel(battery_x + 10, top_y + 4, 1)
 
         # Interior fill (7px wide, 5px tall)
         fill_w = round(pct / 100 * 7) if pct is not None else 0

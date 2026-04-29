@@ -30,44 +30,41 @@ class GPSApp(BaseApp):
         oled = display.oled
         
         if icon_type == "turn_left":
-            oled.hline(x + 2, y + 2, 6, 1)
-            oled.vline(x + 2, y + 2, 6, 1)
-            oled.line(x + 2, y + 2, x + 6, y + 6, 1)
-            oled.hline(x + 2, y + 8, 8, 1)
-            oled.vline(x + 10, y + 8, 4, 1)
+            oled.hline(x + 0, y + 2, 6, 1)
+            oled.vline(x + 0, y + 2, 6, 1)
+            oled.line(x + 0, y + 2, x + 4, y + 6, 1)
+            oled.hline(x + 0, y + 8, 8, 1)
         elif icon_type == "turn_right":
-            oled.hline(x + 4, y + 2, 6, 1)
-            oled.vline(x + 10, y + 2, 6, 1)
-            oled.line(x + 10, y + 2, x + 6, y + 6, 1)
-            oled.hline(x + 2, y + 8, 8, 1)
-            oled.vline(x + 2, y + 8, 4, 1)
+            oled.hline(x + 2, y + 2, 6, 1)
+            oled.vline(x + 8, y + 2, 6, 1)
+            oled.line(x + 8, y + 2, x + 4, y + 6, 1)
+            oled.hline(x + 0, y + 8, 8, 1)
         elif icon_type == "straight":
-            oled.hline(x + 4, y + 2, 5, 1)
-            oled.line(x + 6, y + 2, x + 3, y + 5, 1)
-            oled.line(x + 6, y + 2, x + 9, y + 5, 1)
-            oled.vline(x + 6, y + 2, 10, 1)
+            oled.line(x + 4, y + 2, x + 1, y + 5, 1)
+            oled.line(x + 4, y + 2, x + 7, y + 5, 1)
+            oled.vline(x + 4, y + 2, 7, 1)
         elif icon_type in ("subway", "train"):
-            oled.rect(x + 2, y + 2, 8, 8, 1)
-            oled.rect(x + 3, y + 4, 2, 2, 1)
-            oled.rect(x + 7, y + 4, 2, 2, 1)
-            oled.pixel(x + 3, y + 10, 1)
-            oled.pixel(x + 8, y + 10, 1)
-        elif icon_type == "bus":
-            oled.rect(x + 1, y + 3, 10, 6, 1)
-            oled.rect(x + 2, y + 4, 2, 2, 1)
+            oled.rect(x + 0, y + 2, 8, 8, 1)
+            oled.rect(x + 1, y + 4, 2, 2, 1)
             oled.rect(x + 5, y + 4, 2, 2, 1)
-            oled.rect(x + 8, y + 4, 2, 2, 1)
-            oled.pixel(x + 3, y + 9, 1)
-            oled.pixel(x + 8, y + 9, 1)
+            oled.pixel(x + 1, y + 10, 1)
+            oled.pixel(x + 6, y + 10, 1)
+        elif icon_type == "bus":
+            oled.rect(x + 0, y + 3, 10, 6, 1)
+            oled.rect(x + 1, y + 4, 2, 2, 1)
+            oled.rect(x + 4, y + 4, 2, 2, 1)
+            oled.rect(x + 7, y + 4, 2, 2, 1)
+            oled.pixel(x + 2, y + 9, 1)
+            oled.pixel(x + 7, y + 9, 1)
         elif icon_type == "walk":
-            oled.pixel(x + 6, y + 2, 1)
-            oled.vline(x + 6, y + 3, 5, 1)
-            oled.line(x + 6, y + 4, x + 3, y + 6, 1)
-            oled.line(x + 6, y + 4, x + 9, y + 6, 1)
-            oled.line(x + 6, y + 8, x + 4, y + 11, 1)
-            oled.line(x + 6, y + 8, x + 8, y + 11, 1)
+            oled.pixel(x + 4, y + 2, 1)
+            oled.vline(x + 4, y + 3, 5, 1)
+            oled.line(x + 4, y + 4, x + 1, y + 6, 1)
+            oled.line(x + 4, y + 4, x + 7, y + 6, 1)
+            oled.line(x + 4, y + 8, x + 2, y + 11, 1)
+            oled.line(x + 4, y + 8, x + 6, y + 11, 1)
         else:
-            oled.fill_rect(x + 4, y + 4, 4, 4, 1)
+            oled.fill_rect(x + 2, y + 4, 4, 4, 1)
 
     def render_display(self, display):
         if not display.hardware_available:
@@ -77,7 +74,8 @@ class GPSApp(BaseApp):
         display.draw_app_header(self.label)
 
         if not self.gps_data:
-            display.oled.text("Waiting for GPS.", 0, 29, 1)
+            display.oled.text("Enter destination in", 0, 26, 1)
+            display.oled.text("Dawggles app", 0, 38, 1)
             display.oled.show()
             return
 
@@ -87,14 +85,11 @@ class GPSApp(BaseApp):
 
         distance_str = str(self.gps_data.get("distance", ""))[:5]
         if distance_str:
-            display.oled.text(distance_str, 15, 16, 1)
+            display.oled.text(distance_str, 13, 16, 1)
 
         street_str = str(self.gps_data.get("street", ""))[:12]
         if street_str:
-            display.oled.text(street_str, 50, 16, 1)
-
-        # Divider below nav info
-        display.oled.hline(0, 27, 128, 1)
+            display.oled.text(street_str, 48, 16, 1)
 
         # Minimap Area (Y=29 to 63)
         display.oled.line(64, 50, 60, 58, 1)

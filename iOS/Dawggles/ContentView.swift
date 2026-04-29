@@ -629,6 +629,14 @@ struct AddressSuggestion: Identifiable, Equatable {
     let title: String
     let subtitle: String
     let distanceMeters: CLLocationDistance?
+    let mapItem: MKMapItem?
+
+    init(title: String, subtitle: String, distanceMeters: CLLocationDistance? = nil, mapItem: MKMapItem? = nil) {
+        self.title = title
+        self.subtitle = subtitle
+        self.distanceMeters = distanceMeters
+        self.mapItem = mapItem
+    }
 
     var formattedDistance: String? {
         guard let d = distanceMeters else { return nil }
@@ -736,7 +744,8 @@ private final class AddressCompleter: NSObject, ObservableObject, MKLocalSearchC
                 AddressSuggestion(
                     title: item.name ?? item.placemark.title ?? term,
                     subtitle: Self.formatAddress(item.placemark),
-                    distanceMeters: distance
+                    distanceMeters: distance,
+                    mapItem: item
                 )
             }
 
@@ -795,10 +804,14 @@ private extension String {
 }
 
 private struct NavigationCard: View {
+    @EnvironmentObject private var connection: DawgglesConnection
     @EnvironmentObject private var locationManager: LocationManager
     @StateObject private var completer = AddressCompleter()
     @FocusState private var isFocused: Bool
     @State private var selectedTitle: String?
+    #if DEBUG
+    @State private var isDebugCycling = false
+    #endif
 
     var body: some View {
         DashboardCard {
@@ -826,6 +839,7 @@ private struct NavigationCard: View {
                         Button {
                             completer.query = ""
                             selectedTitle = nil
+                            NavigationManager.shared.stop()
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
@@ -836,6 +850,26 @@ private struct NavigationCard: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(AdaptiveFieldBackground())
+
+                #if DEBUG
+                Button {
+                    if isDebugCycling {
+                        NavigationManager.shared.stopDebugCycle()
+                    } else {
+                        NavigationManager.shared.startDebugCycle(connection: connection)
+                    }
+                    isDebugCycling.toggle()
+                } label: {
+                    Label(
+                        isDebugCycling ? "Stop Icon Debug" : "Debug Icons",
+                        systemImage: isDebugCycling ? "stop.circle" : "arrow.triangle.2.circlepath"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(isDebugCycling ? .red : .orange)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 14)
+                #endif
 
                 let visible = Array(completer.suggestions.prefix(5))
                 if !visible.isEmpty, isFocused, selectedTitle != completer.query {
@@ -848,6 +882,11 @@ private struct NavigationCard: View {
                                 completer.query = combined
                                 selectedTitle = combined
                                 isFocused = false
+                                if let mapItem = suggestion.mapItem {
+                                    NavigationManager.shared.start(to: mapItem, connection: connection, locationManager: locationManager)
+                                } else if let location = locationManager.location {
+                                    NavigationManager.shared.start(toAddressString: combined, near: location, connection: connection, locationManager: locationManager)
+                                }
                             } label: {
                                 HStack(alignment: .top, spacing: 10) {
                                     Image(systemName: suggestion.distanceMeters != nil ? "mappin.circle.fill" : "mappin.and.ellipse")
