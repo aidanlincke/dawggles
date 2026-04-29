@@ -30,6 +30,8 @@ class DawgglesConnection: ObservableObject {
     private var activeHost: String?
     @Published private(set) var isConnecting = false
     private var hasScheduledRetryForCurrentConnection = false
+    private var expectedWiFiIPv4Prefix: String?
+    private var expectedWiFiGateway: String?
 
     var connectionStatus: ConnectionStatus {
         if isConnected { return .connected }
@@ -143,7 +145,7 @@ class DawgglesConnection: ObservableObject {
         isConnecting = true
     }
 
-    func connectWebSocket() {
+    func connectWebSocket(expectedGateway: String? = nil, expectedIPv4Prefix: String? = nil) {
         if isConnected {
             print("DawgglesConnection: connect request ignored (already connected)")
             return
@@ -154,6 +156,8 @@ class DawgglesConnection: ObservableObject {
         hostCandidates = []
         hostIndex = 0
         isConnecting = true
+        expectedWiFiGateway = expectedGateway
+        expectedWiFiIPv4Prefix = expectedIPv4Prefix
 
         startConnectionAttempt()
     }
@@ -172,6 +176,21 @@ class DawgglesConnection: ObservableObject {
             print("DawgglesConnection: no WiFi IPv4 yet (still waiting for AP DHCP?)")
             scheduleReconnectWaitingForWiFi()
             return
+        }
+
+        if let expectedPrefix = expectedWiFiIPv4Prefix, !wifiIP.hasPrefix(expectedPrefix) {
+            print("DawgglesConnection: WiFi IPv4 \(wifiIP) is not on expected hotspot")
+            scheduleReconnectWaitingForWiFi()
+            return
+        }
+
+        if let expectedGateway = expectedWiFiGateway {
+            guard let inferred = inferredGateway(from: wifiIP), inferred == expectedGateway else {
+                let inferred = inferredGateway(from: wifiIP) ?? "unknown"
+                print("DawgglesConnection: WiFi gateway \(inferred) is not expected \(expectedGateway)")
+                scheduleReconnectWaitingForWiFi()
+                return
+            }
         }
 
         let refreshedCandidates = makeHostCandidates(wifiIPv4: wifiIP)

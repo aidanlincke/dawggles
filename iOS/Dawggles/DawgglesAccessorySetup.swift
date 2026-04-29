@@ -23,8 +23,10 @@ final class DawgglesAccessorySetup: ObservableObject {
     // Hardcoded hotspot credentials — swap for dynamic values once the accessory advertises them.
     private static let hotspotSSID = "Dawggles"
     private static let hotspotPassword = "tamalgames"
-    private static let hotspotJoinMaxAttempts = 3
-    private static let hotspotJoinRetryDelay: TimeInterval = 1.0
+    private static let hotspotIPv4Prefix = "192.168.4."
+    private static let hotspotGateway = "192.168.4.1"
+    private static let hotspotJoinRetryInterval: TimeInterval = 5.0
+    private static let hotspotJoinTimeout: TimeInterval = 30.0
 
     @Published var status: String = ""
     @Published private(set) var isSessionReady = false
@@ -38,6 +40,7 @@ final class DawgglesAccessorySetup: ObservableObject {
     private var didStartActivation = false
     private var pendingPickerAfterActivation = false
     private var hotspotJoinRetryWorkItem: DispatchWorkItem?
+    private var hotspotJoinStartedAt: Date?
 
     private init() {}
 
@@ -90,6 +93,7 @@ final class DawgglesAccessorySetup: ObservableObject {
     /// descriptor to have had `ssid` set.
     func joinHotspot(accessory: ASAccessory) {
         hotspotJoinRetryWorkItem?.cancel()
+        hotspotJoinStartedAt = Date()
         DawgglesConnection.shared.beginConnecting()
         joinHotspot(accessory: accessory, attempt: 1)
     }
@@ -101,31 +105,40 @@ final class DawgglesAccessorySetup: ObservableObject {
                 if let error {
                     if self.isAlreadyAssociatedError(error) {
                         self.hotspotJoinRetryWorkItem?.cancel()
-                        DawgglesConnection.shared.connectWebSocket()
+                        self.hotspotJoinStartedAt = nil
+                        DawgglesConnection.shared.connectWebSocket(
+                            expectedGateway: Self.hotspotGateway,
+                            expectedIPv4Prefix: Self.hotspotIPv4Prefix
+                        )
                         return
                     }
 
-                    if attempt < Self.hotspotJoinMaxAttempts {
+                    if self.shouldKeepRetryingHotspotJoin() {
                         let nextAttempt = attempt + 1
-                        print("DawgglesAccessorySetup: joinAccessoryHotspot failed (attempt \(attempt)/\(Self.hotspotJoinMaxAttempts)): \(error.localizedDescription)")
+                        print("DawgglesAccessorySetup: joinAccessoryHotspot failed (attempt \(attempt)): \(error.localizedDescription)")
 
                         let work = DispatchWorkItem { [weak self] in
                             self?.joinHotspot(accessory: accessory, attempt: nextAttempt)
                         }
                         self.hotspotJoinRetryWorkItem = work
-                        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hotspotJoinRetryDelay, execute: work)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hotspotJoinRetryInterval, execute: work)
                         return
                     }
 
-                    print("DawgglesAccessorySetup: joinAccessoryHotspot failed after \(Self.hotspotJoinMaxAttempts) attempts: \(error.localizedDescription)")
+                    print("DawgglesAccessorySetup: joinAccessoryHotspot failed after timeout: \(error.localizedDescription)")
                     self.status = "Could not join Dawggles Wi-Fi. Please try again."
                     self.hotspotJoinRetryWorkItem?.cancel()
+                    self.hotspotJoinStartedAt = nil
                     DawgglesConnection.shared.disconnect()
                     return
                 }
 
                 self.hotspotJoinRetryWorkItem?.cancel()
-                DawgglesConnection.shared.connectWebSocket()
+                self.hotspotJoinStartedAt = nil
+                DawgglesConnection.shared.connectWebSocket(
+                    expectedGateway: Self.hotspotGateway,
+                    expectedIPv4Prefix: Self.hotspotIPv4Prefix
+                )
             }
         }
     }
@@ -161,6 +174,7 @@ final class DawgglesAccessorySetup: ObservableObject {
             break
         case .accessoryRemoved:
             hotspotJoinRetryWorkItem?.cancel()
+            hotspotJoinStartedAt = nil
             pairedAccessory = nil
             status = ""
         case .pickerDidPresent:
@@ -184,6 +198,7 @@ final class DawgglesAccessorySetup: ObservableObject {
             break
         case .invalidated:
             hotspotJoinRetryWorkItem?.cancel()
+            hotspotJoinStartedAt = nil
             isSessionReady = false
             didStartActivation = false
             isPairing = false
@@ -259,6 +274,11 @@ final class DawgglesAccessorySetup: ObservableObject {
         let ns = error as NSError
         return ns.domain == NEHotspotConfigurationErrorDomain
             && ns.code == NEHotspotConfigurationError.alreadyAssociated.rawValue
+    }
+
+    private func shouldKeepRetryingHotspotJoin() -> Bool {
+        guard let startedAt = hotspotJoinStartedAt else { return false }
+        return Date().timeIntervalSince(startedAt) < Self.hotspotJoinTimeout
     }
 }
 

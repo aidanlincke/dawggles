@@ -14,6 +14,8 @@
 	<array>
 		<string>0000D100-0000-1000-8000-00805F9B34FB</string>
 	</array>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Dawggles uses Bluetooth to pair with your Dawggles device and connect it to Wi-Fi.</string>
 	<key>NSAccessorySetupKitSupports</key>
 	<array>
 		<string>Bluetooth</string>
