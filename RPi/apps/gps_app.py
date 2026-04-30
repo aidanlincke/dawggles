@@ -108,14 +108,6 @@ class GPSApp(BaseApp):
         pass
 
     def on_message(self, message):
-        if "app" in message and message["app"] != self.name:
-            from app_manager import start_app
-            start_app(message["app"], self.shared_class)
-            # Re-inject the message so the newly active app can process its payload
-            if "data" in message and self.shared_class.server:
-                self.shared_class.server.message_queue.put(message)
-            return
-        
         if "data" in message:
             self.gps_data = message.get("data")
             self.update_display()

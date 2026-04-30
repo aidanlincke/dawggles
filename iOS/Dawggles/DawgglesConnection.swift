@@ -3,6 +3,7 @@ import Combine
 import Network
 import UIKit
 import Darwin
+import AVFoundation
 
 enum ConnectionStatus: Equatable {
     case disconnected, connecting, connected
@@ -478,6 +479,38 @@ class DawgglesConnection: ObservableObject {
             return
         }
 
+        if obj["event"] as? String == "mic_activate" {
+            DispatchQueue.main.async { self.activateMic() }
+            return
+        }
+
+        if obj["event"] as? String == "mic_deactivate" {
+            DispatchQueue.main.async { self.deactivateMic() }
+            return
+        }
+
+    }
+
+    // MARK: - Mic
+
+    private func activateMic() {
+        let mic = MicrophoneManager.shared
+        mic.onAudioBuffer = { [weak self] data in
+            self?.sendAudioFrame(data)
+        }
+        mic.start()
+    }
+
+    private func deactivateMic() {
+        MicrophoneManager.shared.stop()
+        MicrophoneManager.shared.onAudioBuffer = nil
+    }
+
+    private func sendAudioFrame(_ data: Data) {
+        guard let conn = connection else { return }
+        let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
+        let context = NWConnection.ContentContext(identifier: "audio", metadata: [meta])
+        conn.send(content: data, contentContext: context, isComplete: true, completion: .idempotent)
     }
 
     // MARK: - OLED decode
@@ -529,6 +562,7 @@ class DawgglesConnection: ObservableObject {
     // MARK: - Disconnect
 
     func disconnect() {
+        deactivateMic()
         pendingRouteInvalidationWorkItem?.cancel()
         pendingRouteInvalidationWorkItem = nil
         reconnectWorkItem?.cancel()

@@ -27,6 +27,12 @@ def initialize_apps(shared_class):
 def get_current_app():
     return _current_app_instance
 
+def route_message(message):
+    """Deliver a WebSocket message to its target app by name without switching the UI."""
+    app_name = message.get("app")
+    if app_name and app_name in _APPS:
+        _APPS[app_name].on_message(message)
+
 def start_app(app_name, shared_class, button=None, server=None, back_callback=None):
     global _current_app_instance
 
@@ -56,7 +62,7 @@ def start_app(app_name, shared_class, button=None, server=None, back_callback=No
     if back_callback and shared_class.cycle_button:
         shared_class.cycle_button.update_callback(back_callback)
     if srv:
-        srv.message_handler = _current_app_instance.on_message
+        srv.message_handler = route_message
 
     def _on_websocket_disconnect():
         app = get_current_app()
