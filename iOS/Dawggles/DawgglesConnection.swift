@@ -164,15 +164,6 @@ class DawgglesConnection: ObservableObject {
     }
 
     private func startConnectionAttempt() {
-        #if DEBUG
-        if MockPiTesting.isEnabled {
-            hostCandidates = [MockPiTesting.websocketHost]
-            hostIndex = 0
-            openWebSocket(host: MockPiTesting.websocketHost, logLabel: "mock Pi (Mac)")
-            return
-        }
-        #endif
-
         guard let wifiIP = currentWiFiIPv4() else {
             print("DawgglesConnection: no WiFi IPv4 yet (still waiting for AP DHCP?)")
             scheduleReconnectWaitingForWiFi()

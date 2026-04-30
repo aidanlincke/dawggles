@@ -31,6 +31,8 @@ class TranslationApp(BaseApp):
     def on_unmount(self):
         if self.mode == "text":
             self._stop_text_session()
+        elif self.mode == "speech":
+            self._stop_speech_session()
 
     # ── Sub-menu ───────────────────────────────────────────────────────────────
 
@@ -87,6 +89,13 @@ class TranslationApp(BaseApp):
         self.mode = "speech"
         self.shared_class.display.update_display({"app": self.name})
         self.shared_class.cycle_button.update_callback(self._on_back_to_submenu)
+        if self.shared_class.server:
+            self.shared_class.server.send_json({"app": self.name, "event": "mic_activate"})
+
+    def _stop_speech_session(self):
+        self.mode = "submenu"
+        if self.shared_class.server:
+            self.shared_class.server.send_json({"app": self.name, "event": "mic_deactivate"})
 
     # ── Back button (from text/speech → sub-menu) ──────────────────────────────
 
@@ -94,6 +103,8 @@ class TranslationApp(BaseApp):
         if click_count > 0:
             if self.mode == "text":
                 self._stop_text_session()
+            elif self.mode == "speech":
+                self._stop_speech_session()
             self._show_submenu()
 
     # ── Display rendering ──────────────────────────────────────────────────────
@@ -145,9 +156,10 @@ class TranslationApp(BaseApp):
     # ── WebSocket / message handling ───────────────────────────────────────────
 
     def on_websocket_disconnect(self):
-        if self.mode != "text":
-            return
-        self.mode = "submenu"
+        if self.mode == "speech":
+            self.mode = "submenu"
+        elif self.mode == "text":
+            self.mode = "submenu"
 
     def on_message(self, message):
         if "data" in message:

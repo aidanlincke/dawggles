@@ -69,44 +69,6 @@ final class NavigationManager {
         locationManager = nil
     }
 
-    // MARK: - Debug
-
-#if DEBUG
-    private var debugCycleTask: Task<Void, Never>?
-    private let debugIcons = ["turn_left", "turn_right", "straight"]
-    private var debugIconIndex = 0
-
-    func startDebugCycle(connection: DawgglesConnection) {
-        debugCycleTask?.cancel()
-        self.connection = connection
-        debugIconIndex = 0
-        debugCycleTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                let icon = self.debugIcons[self.debugIconIndex % self.debugIcons.count]
-                self.debugIconIndex += 1
-                connection.sendJSON([
-                    "app": "gps",
-                    "data": [
-                        "icon_type": icon,
-                        "distance": "0.3mi",
-                        "street": "Test St",
-                        "lines": [] as [[Int]]
-                    ] as [String: Any]
-                ])
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-            }
-        }
-    }
-
-    func stopDebugCycle() {
-        debugCycleTask?.cancel()
-        debugCycleTask = nil
-        connection?.sendJSON(["app": "gps", "data": NSNull()])
-        connection = nil
-    }
-#endif
-
     // MARK: - Private
 
     private func subscribeToLocation() {

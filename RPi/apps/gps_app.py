@@ -30,15 +30,21 @@ class GPSApp(BaseApp):
         oled = display.oled
         
         if icon_type == "turn_left":
-            oled.hline(x + 0, y + 2, 6, 1)
-            oled.vline(x + 0, y + 2, 6, 1)
-            oled.line(x + 0, y + 2, x + 4, y + 6, 1)
-            oled.hline(x + 0, y + 8, 8, 1)
+            # Stem: goes up on the right side
+            oled.vline(x + 7, y + 5, 4, 1)
+            # Horizontal arm: turns left at the top
+            oled.hline(x + 0, y + 5, 8, 1)
+            # Arrowhead pointing left
+            oled.line(x + 0, y + 5, x + 3, y + 2, 1)
+            oled.line(x + 0, y + 5, x + 3, y + 8, 1)
         elif icon_type == "turn_right":
-            oled.hline(x + 2, y + 2, 6, 1)
-            oled.vline(x + 8, y + 2, 6, 1)
-            oled.line(x + 8, y + 2, x + 4, y + 6, 1)
-            oled.hline(x + 0, y + 8, 8, 1)
+            # Stem: goes up on the left side
+            oled.vline(x + 1, y + 5, 4, 1)
+            # Horizontal arm: turns right at the top
+            oled.hline(x + 1, y + 5, 8, 1)
+            # Arrowhead pointing right
+            oled.line(x + 8, y + 5, x + 5, y + 2, 1)
+            oled.line(x + 8, y + 5, x + 5, y + 8, 1)
         elif icon_type == "straight":
             oled.line(x + 4, y + 2, x + 1, y + 5, 1)
             oled.line(x + 4, y + 2, x + 7, y + 5, 1)

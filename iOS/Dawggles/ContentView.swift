@@ -40,10 +40,7 @@ struct ContentView: View {
     @StateObject private var translationSettings = TranslationSettings()
 
     private var showPairedDashboard: Bool {
-        #if DEBUG
-        if MockPiTesting.isEnabled { return true }
-        #endif
-        return accessorySetup.pairedAccessory != nil
+        accessorySetup.pairedAccessory != nil
     }
 
     var body: some View {
@@ -57,11 +54,6 @@ struct ContentView: View {
         .environmentObject(translationSettings)
         .onAppear {
             accessorySetup.ensureSessionActivated()
-            #if DEBUG
-            if MockPiTesting.isEnabled {
-                DawgglesConnection.shared.connectWebSocket()
-            }
-            #endif
         }
         .modifier(TranslationViewModifier(translator: translator, settings: translationSettings))
     }
@@ -810,10 +802,6 @@ private struct NavigationCard: View {
     @StateObject private var completer = AddressCompleter()
     @FocusState private var isFocused: Bool
     @State private var selectedTitle: String?
-    #if DEBUG
-    @State private var isDebugCycling = false
-    #endif
-
     var body: some View {
         DashboardCard {
             HStack(spacing: 12) {
@@ -851,26 +839,6 @@ private struct NavigationCard: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(AdaptiveFieldBackground())
-
-                #if DEBUG
-                Button {
-                    if isDebugCycling {
-                        NavigationManager.shared.stopDebugCycle()
-                    } else {
-                        NavigationManager.shared.startDebugCycle(connection: connection)
-                    }
-                    isDebugCycling.toggle()
-                } label: {
-                    Label(
-                        isDebugCycling ? "Stop Icon Debug" : "Debug Icons",
-                        systemImage: isDebugCycling ? "stop.circle" : "arrow.triangle.2.circlepath"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(isDebugCycling ? .red : .orange)
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 14)
-                #endif
 
                 let visible = Array(completer.suggestions.prefix(5))
                 if !visible.isEmpty, isFocused, selectedTitle != completer.query {
