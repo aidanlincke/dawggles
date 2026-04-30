@@ -29,6 +29,8 @@
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dawggles uses your microphone to capture speech for real-time translation on your goggles.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Dawggles transcribes your speech in real time and displays the text on your goggles.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>

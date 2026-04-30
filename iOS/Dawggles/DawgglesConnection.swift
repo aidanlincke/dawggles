@@ -490,9 +490,22 @@ class DawgglesConnection: ObservableObject {
             self?.sendAudioFrame(data)
         }
         mic.start()
+        guard mic.isOnDeviceAvailable else {
+            sendJSON(["app": "translation", "event": "speech_model_unavailable"])
+            return
+        }
+        mic.startSpeechRecognition { [weak self] text, isFinal in
+            self?.sendJSON([
+                "app": "translation",
+                "event": "speech_text",
+                "text": text,
+                "is_final": isFinal
+            ])
+        }
     }
 
     private func deactivateMic() {
+        MicrophoneManager.shared.stopSpeechRecognition()
         MicrophoneManager.shared.stop()
         MicrophoneManager.shared.onAudioBuffer = nil
     }

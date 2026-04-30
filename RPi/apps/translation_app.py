@@ -4,7 +4,7 @@ Translation app — sub-menu → Text (camera OCR) or Speech (todo).
 Modes:
     submenu — scrollable list: Text | Speech | Back
     text    — camera streaming + OCR translation display
-    speech  — placeholder (todo)
+    speech  — live speech recognition, text streamed from phone
 """
 from apps.base_app import BaseApp
 
@@ -22,6 +22,7 @@ class TranslationApp(BaseApp):
         self.translation_data = None
         self.translation_groupings = None
         self.display_idx = 0
+        self.speech_text = ""
 
     # ── Mount / unmount ────────────────────────────────────────────────────────
 
@@ -94,6 +95,7 @@ class TranslationApp(BaseApp):
 
     def _stop_speech_session(self):
         self.mode = "submenu"
+        self.speech_text = ""
         if self.shared_class.server:
             self.shared_class.server.send_json({"app": self.name, "event": "mic_deactivate"})
 
@@ -150,7 +152,21 @@ class TranslationApp(BaseApp):
     def _render_speech(self, display):
         display.oled.fill(0)
         display.draw_app_header("Translate")
-        display.oled.text("[todo]", 0, display.HEADER_CONTENT_START_Y, 1)
+        content_y = display.HEADER_CONTENT_START_Y
+        if self.speech_text == "\x01":
+            msg = "Model loading..."
+            tx = max(0, (display.oled.width - len(msg) * 6) // 2)
+            display.oled.text(msg, tx, content_y + 10, 1)
+        elif self.speech_text.strip():
+            # Show last 30 chars (two lines of 15), so newest words stay visible
+            tail = self.speech_text.strip()[-30:]
+            for i, chunk in enumerate([tail[:15], tail[15:]]):
+                if chunk:
+                    display.oled.text(chunk, 0, content_y + i * 10, 1)
+        else:
+            msg = "Listening..."
+            tx = max(0, (display.oled.width - len(msg) * 6) // 2)
+            display.oled.text(msg, tx, content_y + 10, 1)
         display.oled.show()
 
     # ── WebSocket / message handling ───────────────────────────────────────────
@@ -162,6 +178,14 @@ class TranslationApp(BaseApp):
             self.mode = "submenu"
 
     def on_message(self, message):
+        if message.get("event") == "speech_model_unavailable" and self.mode == "speech":
+            self.speech_text = "\x01"  # sentinel: model not ready
+            self.shared_class.display.update_display({"app": self.name})
+            return
+        if message.get("event") == "speech_text" and self.mode == "speech":
+            self.speech_text = message.get("text", "")
+            self.shared_class.display.update_display({"app": self.name})
+            return
         if "data" in message:
             if self.mode != "text":
                 return
