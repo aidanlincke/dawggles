@@ -262,55 +262,41 @@ private struct PairingView: View {
             Spacer()
 
             VStack(spacing: 16) {
-                Image(systemName: "eyeglasses")
-                    .font(.system(size: 80))
-                    .foregroundStyle(.blue)
+                Image("Icon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 110, height: 110)
+                    .clipShape(RoundedRectangle(cornerRadius: 24))
 
                 Text("Dawggles")
                     .font(.largeTitle)
                     .bold()
 
-                Text("Pair your goggles to get started.")
+                Text("Pair your Dawggles to get started.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
 
             Spacer()
-
+        }
+        .safeAreaInset(edge: .bottom) {
             VStack(spacing: 14) {
                 Button {
                     accessorySetup.startPairing()
                 } label: {
-                    Group {
-                        if accessorySetup.isPairing {
-                            HStack(spacing: 10) {
-                                ProgressView()
-                                    .tint(.white)
-                                Text("Pairing…")
-                                    .bold()
-                            }
-                        } else {
-                            Text("Pair Dawggles")
-                                .bold()
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
+                    Text("Pair Dawggles")
+                        .bold()
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 22)
+                        .contentShape(Capsule())
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(accessorySetup.isPairing)
-
-                if !accessorySetup.status.isEmpty {
-                    Text(accessorySetup.status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.tint(.blue).interactive(), in: Capsule())
             }
             .padding(.horizontal, 40)
-            .padding(.bottom, 60)
+            .padding(.bottom, 20)
         }
     }
 }

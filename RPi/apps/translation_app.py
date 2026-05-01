@@ -178,25 +178,28 @@ class TranslationApp(BaseApp):
     def _render_text(self, display):
         content_y = display.HEADER_CONTENT_START_Y
         content_h = display.oled.height - content_y
-
-        if self.translation_groupings:
-            idx = max(0, min(self.display_idx, len(self.translation_groupings) - 1))
-            line = str(self.translation_groupings[idx].get("translated_text") or self.translation_data or "")
-        else:
-            line = str(self.translation_data or "")
+        chars_per_line = display.oled.width // 6  # 21 chars at 6 px/char for 128 px display
 
         display.oled.fill(0)
         display.draw_app_header("Translate")
 
-        if line.strip():
-            for i, chunk in enumerate([line[:15], line[15:30]]):
-                if chunk.strip():
-                    display.oled.text(chunk, 0, content_y + i * 10, 1)
-        else:
+        if self.translation_data is None:
+            # Camera just started — waiting for the first result.
             msg = "Processing..."
             tx = max(0, (display.oled.width - len(msg) * 6) // 2)
             ty = content_y + (content_h - 8) // 2
             display.oled.text(msg, tx, ty, 1)
+        elif str(self.translation_data).strip():
+            # Each newline-separated segment is a distinct translation block; wrap each independently.
+            all_lines = []
+            for segment in str(self.translation_data).split("\n"):
+                seg = segment.strip()
+                if seg:
+                    all_lines.extend(_wrap_text(seg, chars_per_line))
+            max_lines = content_h // 10
+            for i, ln in enumerate(all_lines[:max_lines]):
+                display.oled.text(ln, 0, content_y + i * 10, 1)
+        # else: translation_data == "" means user looked away — leave content area blank.
 
         display.oled.show()
 

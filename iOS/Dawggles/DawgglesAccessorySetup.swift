@@ -222,7 +222,7 @@ final class DawgglesAccessorySetup: ObservableObject {
         descriptor.supportedOptions = [.bluetoothPairingLE]
         descriptor.ssid = Self.hotspotSSID
 
-        let symbol = UIImage(systemName: "eyeglasses") ?? UIImage()
+        let symbol = UIImage(named: "Icon") ?? UIImage()
         let item = ASPickerDisplayItem(
             name: "Dawggles",
             productImage: symbol,

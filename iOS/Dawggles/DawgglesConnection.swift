@@ -65,6 +65,9 @@ class DawgglesConnection: ObservableObject {
     private let streamDecodeQueue = DispatchQueue(label: "DawgglesConnection.streamDecode", qos: .userInteractive)
     private var pendingFrameData: Data? = nil
     private var isDecodingFrame = false
+    // Main-thread gate: cleared synchronously in tearDownCameraStream so that any
+    // frame already mid-decode on streamDecodeQueue cannot overwrite the nil after teardown.
+    private var cameraStreamActive: Bool = false
 
     private init() {
         startPathMonitoring()
@@ -142,6 +145,7 @@ class DawgglesConnection: ObservableObject {
     }
 
     private func tearDownCameraStream() {
+        cameraStreamActive = false
         cameraImage = nil
         liveAlignment?.disarm()
         streamDecodeQueue.async { [weak self] in self?.pendingFrameData = nil }
@@ -426,6 +430,7 @@ class DawgglesConnection: ObservableObject {
                 case .binary:
                     guard let self else { break }
                     self.streamSeq += 1
+                    DispatchQueue.main.async { self.cameraStreamActive = true }
                     // Per-frame logging removed to avoid console spam during streaming.
                     self.streamDecodeQueue.async { [weak self] in
                         guard let self else { return }
@@ -459,7 +464,7 @@ class DawgglesConnection: ObservableObject {
         }
 
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.cameraStreamActive else { return }
             self.liveAlignment?.arm(connection: self)
             self.cameraImage = image
             self.liveAlignment?.onLiveFrame(image)
