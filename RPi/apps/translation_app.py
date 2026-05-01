@@ -73,6 +73,7 @@ class TranslationApp(BaseApp):
         self.translation_data = None
         self.translation_groupings = None
         self.display_idx = 0
+        self._wrapped_lines = []   # cached word-wrapped lines for the current translation
         self.speech_text = ""
 
     # ── Mount / unmount ────────────────────────────────────────────────────────
@@ -113,6 +114,8 @@ class TranslationApp(BaseApp):
             elif choice == "Back":
                 from home_screen import show_home_screen
                 show_home_screen(self.shared_class)
+        elif self.mode == "text":
+            self._scroll_text()
 
     # ── Text mode ──────────────────────────────────────────────────────────────
 
@@ -128,11 +131,25 @@ class TranslationApp(BaseApp):
         self.shared_class.display.update_display({"app": self.name})
         self.shared_class.cycle_button.update_callback(self._on_back_to_submenu)
 
+    def _scroll_text(self):
+        """Advance one page through the wrapped lines; wraps back to the top."""
+        if not self._wrapped_lines:
+            return
+        display = self.shared_class.display
+        content_h = display.oled.height - display.HEADER_CONTENT_START_Y
+        max_lines = content_h // 10
+        total = len(self._wrapped_lines)
+        if total <= max_lines:
+            return  # fits on one screen — nothing to scroll
+        self.display_idx = (self.display_idx + max_lines) % total
+        display.update_display({"app": self.name})
+
     def _stop_text_session(self):
         self.shared_class.camera_streaming = False
         self.translation_data = None
         self.translation_groupings = None
         self.display_idx = 0
+        self._wrapped_lines = []
         self.mode = "submenu"
 
     # ── Speech mode ────────────────────────────────────────────────────────────
@@ -190,15 +207,17 @@ class TranslationApp(BaseApp):
             ty = content_y + (content_h - 8) // 2
             display.oled.text(msg, tx, ty, 1)
         elif str(self.translation_data).strip():
-            # Each newline-separated segment is a distinct translation block; wrap each independently.
-            all_lines = []
-            for segment in str(self.translation_data).split("\n"):
-                seg = segment.strip()
-                if seg:
-                    all_lines.extend(_wrap_text(seg, chars_per_line))
+            all_lines = self._wrapped_lines
             max_lines = content_h // 10
-            for i, ln in enumerate(all_lines[:max_lines]):
+            page_lines = all_lines[self.display_idx : self.display_idx + max_lines]
+            more_below = (self.display_idx + max_lines) < len(all_lines)
+            for i, ln in enumerate(page_lines):
                 display.oled.text(ln, 0, content_y + i * 10, 1)
+            if more_below:
+                # Small down-arrow in the bottom-right corner to hint that more text is below.
+                ax = display.oled.width - 6
+                ay = display.oled.height - 8
+                display.oled.text(">", ax, ay, 1)
         # else: translation_data == "" means user looked away — leave content area blank.
 
         display.oled.show()
@@ -276,4 +295,13 @@ class TranslationApp(BaseApp):
             self.translation_data = message.get("data")
             self.translation_groupings = message.get("groupings")
             self.display_idx = 0
+            # Rebuild wrapped-line cache so _scroll_text and _render_text agree on total length.
+            display = self.shared_class.display
+            chars_per_line = display.oled.width // 6
+            lines = []
+            for segment in str(self.translation_data).split("\n"):
+                seg = segment.strip()
+                if seg:
+                    lines.extend(_wrap_text(seg, chars_per_line))
+            self._wrapped_lines = lines
             self.shared_class.display.update_display({"app": self.name})

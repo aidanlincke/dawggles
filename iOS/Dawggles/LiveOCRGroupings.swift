@@ -42,6 +42,8 @@ enum LiveOCRGroupings {
             let conf = Double(candidate.confidence)
             guard conf >= minimumObservationConfidence else { continue }
             let text = candidate.string
+            // Skip purely numeric tokens — translating "1" → "1" clutters the display.
+            guard !Self.isPurelyNumeric(text) else { continue }
             let b = obs.boundingBox
             // Store as Double so downstream `as? Double` / `TranslationGrouping` always sees numeric values
             // (plain CGFloat in [String: Any] often does not bridge to NSNumber).
@@ -100,6 +102,16 @@ enum LiveOCRGroupings {
         return 0
     }
     
+    /// Returns true when `text` consists entirely of digits and numeric punctuation
+    /// (periods, commas, colons, slashes, hyphens, percent signs, spaces).
+    /// Single digits, multi-digit numbers, times, and date fragments all match.
+    private static func isPurelyNumeric(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        let allowed = CharacterSet.decimalDigits
+            .union(CharacterSet(charactersIn: " .,:/-%+"))
+        return text.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
     private static func scaleIfNeeded(_ image: UIImage, maxSide: CGFloat) -> UIImage {
         let w = image.size.width
         let h = image.size.height
