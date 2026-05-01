@@ -369,6 +369,7 @@ private struct PairedView: View {
                 connection.liveAlignment = liveAlignment
                 locationManager.requestAlwaysAuthorization()
                 MicrophoneManager.shared.requestPermission()
+                MicrophoneManager.shared.loadModelIfNeeded()
             }
             .onDisappear {
                 connection.liveAlignment = nil

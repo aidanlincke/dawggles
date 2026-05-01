@@ -494,12 +494,11 @@ class DawgglesConnection: ObservableObject {
             sendJSON(["app": "translation", "event": "speech_model_unavailable"])
             return
         }
-        mic.startSpeechRecognition { [weak self] text, isFinal in
+        mic.startSpeechRecognition { [weak self] text in
             self?.sendJSON([
                 "app": "translation",
                 "event": "speech_text",
-                "text": text,
-                "is_final": isFinal
+                "text": text
             ])
         }
     }

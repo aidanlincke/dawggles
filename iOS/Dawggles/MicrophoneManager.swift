@@ -1,36 +1,77 @@
 import Foundation
 import AVFoundation
-import Speech
+import WhisperKit
 import Combine
 
 /// Captures microphone audio and streams 16 kHz mono Int16 PCM via `onAudioBuffer`.
-/// Optionally runs live speech recognition and delivers results via `onSpeechResult`.
-/// Start/stop is driven by WebSocket events from the Pi (mic_activate / mic_deactivate).
+/// Optionally runs on-device live speech recognition via WhisperKit and delivers
+/// results via `onSpeechResult`. Start/stop driven by mic_activate / mic_deactivate.
 class MicrophoneManager: ObservableObject {
     static let shared = MicrophoneManager()
 
     @Published private(set) var isRecording = false
+    @Published private(set) var modelState: ModelState = .unloaded
+
+    enum ModelState: Equatable {
+        case unloaded
+        case loading
+        case ready
+        case unavailable(String)
+    }
 
     /// Called on a background thread with each chunk of raw PCM data ready to send.
     var onAudioBuffer: ((Data) -> Void)?
-    /// Called on the main thread with (text, isFinal) when speech is recognized.
-    var onSpeechResult: ((String, Bool) -> Void)?
+    /// Called on the main thread with recognized text when a chunk is transcribed.
+    var onSpeechResult: ((String) -> Void)?
 
     private let engine = AVAudioEngine()
     private let targetSampleRate: Double = 16000
     private let targetChannels: AVAudioChannelCount = 1
 
-    private var recognizer: SFSpeechRecognizer?
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var inputFormat: AVAudioFormat?
+    // 5-second chunks at 16 kHz
+    private let chunkSampleCount = 16000 * 5
+    private var pendingSamples: [Float] = []
+    private var isTranscribing = false
+    private var whisperPipe: WhisperKit?
 
     private init() {}
 
     func requestPermission() {
         AVAudioApplication.requestRecordPermission { _ in }
-        SFSpeechRecognizer.requestAuthorization { _ in }
     }
+
+    // MARK: - Model
+
+    func loadModelIfNeeded() {
+        guard case .unloaded = modelState else { return }
+        modelState = .loading
+        Task {
+            do {
+                let pipe = try await WhisperKit(model: "base")
+                await MainActor.run {
+                    self.whisperPipe = pipe
+                    self.modelState = .ready
+                }
+                #if DEBUG
+                print("[WHISPER] Model ready")
+                #endif
+            } catch {
+                await MainActor.run {
+                    self.modelState = .unavailable(error.localizedDescription)
+                }
+                #if DEBUG
+                print("[WHISPER] Model load failed: \(error)")
+                #endif
+            }
+        }
+    }
+
+    var isModelReady: Bool {
+        if case .ready = modelState { return true }
+        return false
+    }
+
+    // MARK: - Recording
 
     func start() {
         guard !isRecording else { return }
@@ -49,7 +90,6 @@ class MicrophoneManager: ObservableObject {
 
         let inputNode = engine.inputNode
         let nativeFormat = inputNode.outputFormat(forBus: 0)
-        inputFormat = nativeFormat
 
         guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -67,22 +107,29 @@ class MicrophoneManager: ObservableObject {
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { [weak self] buffer, _ in
             guard let self else { return }
 
-            // Feed speech recognizer (uses native format)
-            self.recognitionRequest?.append(buffer)
-
-            // Convert and stream PCM to Pi
             let outFrames = AVAudioFrameCount(
                 Double(buffer.frameLength) * self.targetSampleRate / nativeFormat.sampleRate
             )
             guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outFrames) else { return }
+
             var error: NSError?
             converter.convert(to: converted, error: &error) { _, outStatus in
                 outStatus.pointee = .haveData
                 return buffer
             }
-            guard error == nil, let samples = converted.int16ChannelData else { return }
-            let data = Data(bytes: samples[0], count: Int(converted.frameLength) * 2)
+            guard error == nil, let int16Ptr = converted.int16ChannelData else { return }
+            let frameCount = Int(converted.frameLength)
+
+            // Stream Int16 PCM to Pi
+            let data = Data(bytes: int16Ptr[0], count: frameCount * 2)
             self.onAudioBuffer?(data)
+
+            // Accumulate Float32 samples for WhisperKit
+            if self.onSpeechResult != nil {
+                let floats = (0..<frameCount).map { Float(int16Ptr[0][$0]) / 32768.0 }
+                self.pendingSamples.append(contentsOf: floats)
+                self.transcribeIfReady()
+            }
         }
 
         do {
@@ -101,7 +148,8 @@ class MicrophoneManager: ObservableObject {
 
     func stop() {
         guard isRecording else { return }
-        stopSpeechRecognition()
+        onSpeechResult = nil
+        pendingSamples = []
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -113,87 +161,55 @@ class MicrophoneManager: ObservableObject {
 
     // MARK: - Speech recognition
 
-    /// Returns false if on-device model is not yet available (still downloading).
-    var isOnDeviceAvailable: Bool {
-        SFSpeechRecognizer(locale: Locale(identifier: "en-US"))?.supportsOnDeviceRecognition ?? false
-    }
-
-    func startSpeechRecognition(onResult: @escaping (String, Bool) -> Void) {
+    func startSpeechRecognition(onResult: @escaping (String) -> Void) {
+        guard isModelReady else {
+            #if DEBUG
+            print("[WHISPER] Model not ready")
+            #endif
+            return
+        }
+        pendingSamples = []
+        isTranscribing = false
         onSpeechResult = onResult
-        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
-            #if DEBUG
-            print("[SPEECH] Not authorized")
-            #endif
-            return
-        }
-        guard isOnDeviceAvailable else {
-            #if DEBUG
-            print("[SPEECH] On-device model not yet available")
-            #endif
-            return
-        }
-        startRecognitionTask()
     }
 
     func stopSpeechRecognition() {
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
-        recognitionRequest = nil
-        recognitionTask = nil
         onSpeechResult = nil
-        #if DEBUG
-        print("[SPEECH] Recognition stopped")
-        #endif
+        pendingSamples = []
+        isTranscribing = false
     }
 
-    private func startRecognitionTask() {
-        guard let format = inputFormat else { return }
+    private func transcribeIfReady() {
+        guard !isTranscribing,
+              pendingSamples.count >= chunkSampleCount,
+              let pipe = whisperPipe,
+              let callback = onSpeechResult else { return }
 
-        let rec = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-        rec?.defaultTaskHint = .dictation
-        recognizer = rec
+        let chunk = Array(pendingSamples.prefix(chunkSampleCount))
+        pendingSamples = Array(pendingSamples.dropFirst(chunkSampleCount))
+        isTranscribing = true
 
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.addsPunctuation = true
-        request.requiresOnDeviceRecognition = true
-        recognitionRequest = request
-
-        recognitionTask = rec?.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-
-            if let result {
-                let text = result.bestTranscription.formattedString
-                let isFinal = result.isFinal
-                DispatchQueue.main.async {
-                    self.onSpeechResult?(text, isFinal)
+        Task {
+            defer { self.isTranscribing = false }
+            do {
+                let options = DecodingOptions(task: .transcribe, language: "en")
+                let results = try await pipe.transcribe(audioArray: chunk, decodeOptions: options)
+                let text = results.compactMap { $0.text.nilIfEmpty() }.joined(separator: " ")
+                if !text.isEmpty {
+                    await MainActor.run { callback(text) }
                 }
-                // Apple caps continuous sessions at ~1 min; restart on completion
-                if isFinal {
-                    self.restartRecognitionTask()
-                }
-            } else if error != nil {
-                // Task ended (timeout/error) — restart if still recording
-                if self.isRecording {
-                    self.restartRecognitionTask()
-                }
+            } catch {
+                #if DEBUG
+                print("[WHISPER] Transcription error: \(error)")
+                #endif
             }
         }
-
-        _ = format // silence unused warning; format is used to install the tap in start()
-        #if DEBUG
-        print("[SPEECH] Recognition task started")
-        #endif
     }
+}
 
-    private func restartRecognitionTask() {
-        guard isRecording, onSpeechResult != nil else { return }
-        recognitionRequest?.endAudio()
-        recognitionRequest = nil
-        recognitionTask = nil
-        #if DEBUG
-        print("[SPEECH] Restarting recognition task")
-        #endif
-        startRecognitionTask()
+private extension String {
+    func nilIfEmpty() -> String? {
+        let t = trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
     }
 }
