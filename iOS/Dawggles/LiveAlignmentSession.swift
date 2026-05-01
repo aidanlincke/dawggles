@@ -176,7 +176,7 @@ final class LiveAlignmentSession: ObservableObject {
 
         // Debug simplification: use raw Vision observations directly (no merge, no ROI selection).
         // For UI, attach `ui_text` when we already have a cached translation.
-        let translator = ImageTranslator.shared
+        let translator = Translator.shared
         let groupings: [[String: Any]] = raw.map { d in
             var m = d
             let src = (d["translated_text"] as? String) ?? ""
@@ -283,7 +283,7 @@ final class LiveAlignmentSession: ObservableObject {
         print("[LIVE] LiveAlignment: enqueue translate seq=\(seq) rows=\(groupings.count)")
         #endif
         dumpImageIfNeeded(latestLiveFrame, tag: "enqueue_seq_\(seq)")
-        ImageTranslator.shared.enqueueLiveGroupings(groupings: groupings) { [weak self] translatedOut in
+        Translator.shared.enqueueLiveGroupings(groupings: groupings) { [weak self] translatedOut in
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard seq == self.liveTranslateSeq else { return }

@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Speech
+import Combine
 
 /// Captures microphone audio and runs on-device live speech recognition via SpeechAnalyzer.
 /// Start/stop driven by mic_activate / mic_deactivate events from the Pi.
@@ -107,7 +108,7 @@ class MicrophoneManager: ObservableObject {
 
             guard let analyzerFmt = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
                 #if DEBUG
-                print("[SPEECH] No compatible audio format available")
+                print("[SPEECH] No compatible audio format available for \(resolved.identifier)")
                 #endif
                 return
             }

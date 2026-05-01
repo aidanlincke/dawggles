@@ -16,9 +16,8 @@ class TranslationSettings: ObservableObject {
     static let sourceLanguages = ["Auto", "English", "Spanish", "Chinese", "French", "German", "Japanese", "Korean"]
     static let sourceLanguageCodes = ["", "en", "es", "zh", "fr", "de", "ja", "ko"]
 
-    // Target: only Latin-script languages that render correctly on the OLED display
-    static let targetLanguages = ["English", "Spanish", "French", "German"]
-    static let targetLanguageCodes = ["en", "es", "fr", "de"]
+    static let targetLanguages = ["English", "Spanish", "French", "German", "Russian"]
+    static let targetLanguageCodes = ["en", "es", "fr", "de", "ru"]
 
     @Published var selectedSourceIndex = 1 // English
     @Published var selectedTargetIndex = 1 // Spanish
@@ -36,7 +35,7 @@ class TranslationSettings: ObservableObject {
 
 struct ContentView: View {
     @EnvironmentObject private var accessorySetup: DawgglesAccessorySetup
-    @StateObject private var translator = ImageTranslator.shared
+    @StateObject private var translator = Translator.shared
     @StateObject private var translationSettings = TranslationSettings()
 
     private var showPairedDashboard: Bool {
@@ -45,7 +44,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if showPairedDashboard {
+            if !accessorySetup.isSessionReady {
+                Color.clear
+            } else if showPairedDashboard {
                 PairedView()
             } else {
                 PairingView()
@@ -62,10 +63,17 @@ struct ContentView: View {
 // MARK: - Translation modifier
 
 private struct TranslationViewModifier: ViewModifier {
-    @ObservedObject var translator: ImageTranslator
+    @ObservedObject var translator: Translator
     @ObservedObject var settings: TranslationSettings
     @State private var configuration: TranslationSession.Configuration?
     @State private var prefetchConfiguration: TranslationSession.Configuration?
+
+    private var isSameLanguage: Bool {
+        let srcIdx = settings.selectedSourceIndex
+        guard srcIdx != 0 else { return false }
+        return TranslationSettings.sourceLanguageCodes[srcIdx] ==
+               TranslationSettings.targetLanguageCodes[settings.selectedTargetIndex]
+    }
 
     private func makeConfiguration() -> TranslationSession.Configuration {
         TranslationSession.Configuration(
@@ -143,6 +151,11 @@ private struct TranslationViewModifier: ViewModifier {
                 let blocks = translator.blocksToTranslate
                 print("TranslationViewModifier: blocksToTranslate count=\(blocks.count)")
                 if !blocks.isEmpty {
+                    if isSameLanguage {
+                        let passthrough = blocks.map { var b = $0; b.translatedText = b.text; return b }
+                        translator.completeTranslation(translatedBlocks: passthrough)
+                        return
+                    }
                     var translated: [TranslationBlock] = []
                     do {
                         for block in blocks {
@@ -185,6 +198,11 @@ private struct TranslationViewModifier: ViewModifier {
                     #if DEBUG
                     print("[LIVE] TranslationTask: live complete (empty)")
                     #endif
+                    return
+                }
+
+                if isSameLanguage {
+                    translator.completeLiveTranslation(translatedGroupings: live)
                     return
                 }
 
@@ -305,7 +323,8 @@ private struct PairedView: View {
     @EnvironmentObject private var locationManager: LocationManager
 
     @StateObject private var liveAlignment = LiveAlignmentSession()
-    @ObservedObject private var translator = ImageTranslator.shared
+    @ObservedObject private var translator = Translator.shared
+    @ObservedObject private var mic = MicrophoneManager.shared
     @EnvironmentObject var translationSettings: TranslationSettings
     @State private var showSettings = false
     @AppStorage("presentationMode") private var presentationMode: Bool = false
@@ -390,13 +409,16 @@ private struct PairedView: View {
                         }
                     } content: {
                         HStack(spacing: 0) {
-                            Menu {
-                                Picker("From", selection: $translationSettings.selectedSourceIndex) {
-                                    ForEach(0..<TranslationSettings.sourceLanguages.count, id: \.self) { index in
-                                        Text(TranslationSettings.sourceLanguages[index]).tag(index)
+                        Menu {
+                            Picker("From", selection: $translationSettings.selectedSourceIndex) {
+                                ForEach(0..<TranslationSettings.sourceLanguages.count, id: \.self) { index in
+                                    if index != 0 || !mic.isRecording {
+                                        Text(TranslationSettings.sourceLanguages[index])
+                                            .tag(index)
                                     }
                                 }
-                            } label: {
+                            }
+                        } label: {
                                 Text(TranslationSettings.sourceLanguages[translationSettings.selectedSourceIndex])
                                     .font(.body)
                                     .fontWeight(.medium)

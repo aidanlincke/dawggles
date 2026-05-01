@@ -1,4 +1,5 @@
 import Foundation
+import Speech
 import Combine
 import Network
 import UIKit
@@ -18,7 +19,22 @@ class DawgglesConnection: ObservableObject {
     @Published private(set) var oledImage: UIImage? = nil
 
     weak var liveAlignment: LiveAlignmentSession?
-    var translationSettings: TranslationSettings?
+    private var sourceLanguageCancellable: AnyCancellable?
+    var translationSettings: TranslationSettings? {
+        didSet {
+            // When the source language changes while the mic is live, restart speech
+            // recognition with the new locale — otherwise the recognizer keeps using
+            // whatever locale was active at mic_activate time.
+            sourceLanguageCancellable = translationSettings?.$selectedSourceIndex
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    guard let self, MicrophoneManager.shared.isRecording else { return }
+                    MicrophoneManager.shared.stopSpeechRecognition()
+                    self.beginSpeechRecognition()
+                }
+        }
+    }
 
     private var connection: NWConnection?
     private var reconnectWorkItem: DispatchWorkItem?
@@ -486,14 +502,33 @@ class DawgglesConnection: ObservableObject {
     // MARK: - Mic
 
     private func activateMic() {
-        let mic = MicrophoneManager.shared
-        mic.start()
-        mic.startSpeechRecognition(locale: resolvedSpeechLocale()) { [weak self] text, _ in
-            self?.sendJSON([
-                "app": "translation",
-                "event": "speech_text",
-                "text": text
-            ])
+        MicrophoneManager.shared.start()
+        beginSpeechRecognition()
+    }
+
+    private func beginSpeechRecognition() {
+        MicrophoneManager.shared.startSpeechRecognition(locale: resolvedSpeechLocale()) { [weak self] text, _ in
+            guard let self else { return }
+            // Same-language (captions mode): bypass the translation task entirely.
+            // Apple's translationTask closure does not fire reliably for an
+            // identical source/target pair, which would stall the isTranslating
+            // flag and drop all subsequent speech updates.
+            let isSameLanguage: Bool = {
+                guard let s = self.translationSettings, s.selectedSourceIndex != 0 else { return false }
+                return TranslationSettings.sourceLanguageCodes[s.selectedSourceIndex] ==
+                       TranslationSettings.targetLanguageCodes[s.selectedTargetIndex]
+            }()
+            if isSameLanguage {
+                self.sendJSON(["app": "translation", "event": "speech_text", "text": text])
+            } else {
+                Translator.shared.translate(text) { [weak self] translatedText in
+                    self?.sendJSON([
+                        "app": "translation",
+                        "event": "speech_text",
+                        "text": translatedText
+                    ])
+                }
+            }
         }
     }
 
@@ -511,9 +546,27 @@ class DawgglesConnection: ObservableObject {
                    ?? TranslationSettings.sourceLanguageCodes.firstIndex(of: "en")
                    ?? 1
             settings.selectedSourceIndex = idx
-            return Locale(identifier: TranslationSettings.sourceLanguageCodes[idx])
+            return Self.speechLocale(for: TranslationSettings.sourceLanguageCodes[idx])
         }
-        return Locale(identifier: TranslationSettings.sourceLanguageCodes[settings.selectedSourceIndex])
+        return Self.speechLocale(for: TranslationSettings.sourceLanguageCodes[settings.selectedSourceIndex])
+    }
+
+    /// Maps bare language codes to the region-specific locale that
+    /// SpeechTranscriber.supportedLocales actually lists. Without a region
+    /// suffix, supportedLocale(equivalentTo:) returns nil and recognition
+    /// silently falls back to English.
+    private static func speechLocale(for code: String) -> Locale {
+        let regionMap: [String: String] = [
+            "en": "en-US",
+            "es": "es-ES",
+            "zh": "zh-CN",
+            "fr": "fr-FR",
+            "de": "de-DE",
+            "ja": "ja-JP",
+            "ko": "ko-KR",
+            "ru": "ru-RU",
+        ]
+        return Locale(identifier: regionMap[code] ?? code)
     }
 
 
