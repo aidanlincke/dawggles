@@ -549,6 +549,35 @@ class DawgglesConnection: ObservableObject {
             return
         }
 
+        if obj["app"] as? String == "camera", obj["event"] as? String == "capture" {
+            DispatchQueue.main.async { self.handleCameraCapture() }
+            return
+        }
+
+    }
+
+    // MARK: - Camera capture (Camera app)
+
+    /// Snapshot the most recent live frame and write it to the iOS Photos library.
+    /// Sends `capture_saved` / `capture_failed` back to the Pi so the OLED can show feedback.
+    private func handleCameraCapture() {
+        guard let image = cameraImage else {
+            #if DEBUG
+            print("[CAMERA] capture requested but no live frame available")
+            #endif
+            sendJSON(["app": "camera", "event": "capture_failed", "reason": "no_frame"])
+            return
+        }
+        PhotoLibrarySaver.save(image: image) { [weak self] success in
+            guard let self else { return }
+            self.sendJSON([
+                "app": "camera",
+                "event": success ? "capture_saved" : "capture_failed"
+            ])
+            #if DEBUG
+            print("[CAMERA] capture \(success ? "saved" : "failed")")
+            #endif
+        }
     }
 
     // MARK: - Mic

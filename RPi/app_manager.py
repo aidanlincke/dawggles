@@ -3,8 +3,10 @@ App Manager - switching between applications
 """
 import logging
 from app_registry import APP_ORDER
+from apps.camera_app import CameraApp
 from apps.gps_app import GPSApp
 from apps.settings_app import SettingsApp
+from apps.snake_app import SnakeApp
 from apps.translation_app import TranslationApp
 from goggles_lib import CameraClient
 
@@ -18,7 +20,9 @@ def initialize_apps(shared_class):
     if shared_class.camera_client is None:
         shared_class.camera_client = CameraClient(shared_class, _CAMERA_CONFIG)
     _APPS["translation"] = TranslationApp(shared_class)
+    _APPS["camera"] = CameraApp(shared_class)
     _APPS["gps"] = GPSApp(shared_class)
+    _APPS["snake"] = SnakeApp(shared_class)
     _APPS["settings"] = SettingsApp(shared_class)
 
     if tuple(_APPS.keys()) != APP_ORDER:

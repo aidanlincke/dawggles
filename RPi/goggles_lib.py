@@ -812,13 +812,38 @@ class Display:
 
     def draw_menu(self, title: str, items: list, selected_idx: int):
         """Standard scrollable menu. Call from render_display (lock already held).
-        Draws header + one "> Label" row per item, all in the same style."""
+        Draws header + one "> Label" row per visible item. When items overflow
+        the screen, shows a viewport that always contains `selected_idx` and
+        renders up/down hint arrows for items outside the viewport."""
         self.oled.fill(0)
         self.draw_app_header(title)
         base_y = self.HEADER_CONTENT_START_Y + self.MENU_ITEM_OFFSET
-        for i, item in enumerate(items):
+        available_h = self.oled.height - base_y
+        max_visible = max(1, available_h // self.MENU_ITEM_HEIGHT)
+        n = len(items)
+
+        # Stateless viewport: pick a `top` that keeps `selected_idx` on screen
+        # and is clamped so we never show fewer rows than we could fit.
+        if n <= max_visible:
+            top = 0
+        else:
+            page = selected_idx // max_visible
+            top = page * max_visible
+            top = min(top, n - max_visible)
+            top = max(0, top)
+
+        end = min(n, top + max_visible)
+        for row, i in enumerate(range(top, end)):
             prefix = ">" if i == selected_idx else " "
-            self.oled.text(f"{prefix} {item}", 0, base_y + i * self.MENU_ITEM_HEIGHT, 1)
+            self.oled.text(f"{prefix} {items[i]}", 0, base_y + row * self.MENU_ITEM_HEIGHT, 1)
+
+        # Edge hint arrows on the far right when there's content above/below.
+        ax = self.oled.width - 6
+        if top > 0:
+            self.oled.text("^", ax, base_y, 1)
+        if end < n:
+            self.oled.text("v", ax, base_y + (max_visible - 1) * self.MENU_ITEM_HEIGHT, 1)
+
         self.oled.show()
 
     def update_display(self, data):

@@ -176,7 +176,9 @@ final class LiveAlignmentSession: ObservableObject {
     private func textMatchesLanguage(_ text: String, code: String) -> Bool {
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)
-        guard let dominant = recognizer.dominantLanguage else { return true }
+        // If NL can't identify the language at all, the string is likely digits/symbols/a
+        // product code with no meaningful content in the source language — reject it.
+        guard let dominant = recognizer.dominantLanguage else { return false }
         return dominant.rawValue.hasPrefix(code)
     }
 

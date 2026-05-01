@@ -391,6 +391,7 @@ private struct PairedView: View {
                 connection.liveAlignment = liveAlignment
                 locationManager.requestAlwaysAuthorization()
                 MicrophoneManager.shared.requestPermission()
+                PhotoLibrarySaver.requestAddOnlyPermission()
                 connection.translationSettings = translationSettings
                 liveAlignment.sourceCode = TranslationSettings.sourceLanguageCodes[translationSettings.selectedSourceIndex]
             }

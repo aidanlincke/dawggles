@@ -59,6 +59,28 @@ def _wrap_text(text: str, max_chars: int) -> list:
         lines.append(current)
     return lines
 
+_PIL_CHAR_W: int | None = None  # cached once per process
+
+
+def _pil_text_metrics(oled_width: int) -> tuple:
+    """Return (font, chars_per_line, line_h) using the PIL TTF font when available.
+
+    Falls back to (None, oled_width // 6, 10) so callers can always unpack three values
+    and treat None-font as the ASCII-framebuf path.
+    """
+    global _PIL_CHAR_W
+    font = _load_pil_font()
+    if font is None:
+        return None, oled_width // 6, 10
+    if _PIL_CHAR_W is None:
+        _PIL_CHAR_W = font.getbbox("M")[2] - font.getbbox("M")[0]
+    char_w = _PIL_CHAR_W
+    bb = font.getbbox("Ágy")
+    line_h = bb[3] - bb[1] + 1
+    chars_per_line = max(1, oled_width // char_w)
+    return font, chars_per_line, line_h
+
+
 _SUBMENU = ["Text", "Speech", "Back"]
 
 
@@ -137,7 +159,8 @@ class TranslationApp(BaseApp):
             return
         display = self.shared_class.display
         content_h = display.oled.height - display.HEADER_CONTENT_START_Y
-        max_lines = content_h // 10
+        _, _, line_h = _pil_text_metrics(display.oled.width)
+        max_lines = content_h // line_h
         total = len(self._wrapped_lines)
         if total <= max_lines:
             return  # fits on one screen — nothing to scroll
@@ -195,32 +218,59 @@ class TranslationApp(BaseApp):
     def _render_text(self, display):
         content_y = display.HEADER_CONTENT_START_Y
         content_h = display.oled.height - content_y
-        chars_per_line = display.oled.width // 6  # 21 chars at 6 px/char for 128 px display
 
         display.oled.fill(0)
         display.draw_app_header("Translate")
 
         if self.translation_data is None:
-            # Camera just started — waiting for the first result.
             msg = "Processing..."
             tx = max(0, (display.oled.width - len(msg) * 6) // 2)
             ty = content_y + (content_h - 8) // 2
             display.oled.text(msg, tx, ty, 1)
         elif str(self.translation_data).strip():
-            all_lines = self._wrapped_lines
-            max_lines = content_h // 10
-            page_lines = all_lines[self.display_idx : self.display_idx + max_lines]
-            more_below = (self.display_idx + max_lines) < len(all_lines)
-            for i, ln in enumerate(page_lines):
-                display.oled.text(ln, 0, content_y + i * 10, 1)
-            if more_below:
-                # Small down-arrow in the bottom-right corner to hint that more text is below.
-                ax = display.oled.width - 6
-                ay = display.oled.height - 8
-                display.oled.text(">", ax, ay, 1)
+            font, _, line_h = _pil_text_metrics(display.oled.width)
+            if font is not None:
+                self._render_text_pil(display, font, line_h, content_y, content_h)
+            else:
+                # ASCII framebuf fallback (no Pillow / no TTF found).
+                max_lines = content_h // line_h
+                page_lines = self._wrapped_lines[self.display_idx : self.display_idx + max_lines]
+                more_below = (self.display_idx + max_lines) < len(self._wrapped_lines)
+                for i, ln in enumerate(page_lines):
+                    display.oled.text(ln, 0, content_y + i * line_h, 1)
+                if more_below:
+                    display.oled.text(">", display.oled.width - 6, display.oled.height - 8, 1)
         # else: translation_data == "" means user looked away — leave content area blank.
 
         display.oled.show()
+
+    def _render_text_pil(self, display, font, line_h, content_y, content_h):
+        from PIL import Image, ImageDraw
+
+        max_lines = max(1, content_h // line_h)
+        page_lines = self._wrapped_lines[self.display_idx : self.display_idx + max_lines]
+        more_below = (self.display_idx + max_lines) < len(self._wrapped_lines)
+
+        img = Image.new("1", (display.oled.width, display.oled.height), 0)
+        draw = ImageDraw.Draw(img)
+        for i, line in enumerate(page_lines):
+            draw.text((0, content_y + i * line_h), line, font=font, fill=1)
+        if more_below:
+            char_w = font.getbbox("M")[2] - font.getbbox("M")[0]
+            draw.text((display.oled.width - char_w, display.oled.height - line_h), ">", font=font, fill=1)
+
+        # Blit only the content area into the OLED buffer, preserving the header.
+        w = display.oled.width
+        for row in range(content_y, display.oled.height):
+            page, bit = row >> 3, row & 7
+            mask_set = 1 << bit
+            mask_clr = ~mask_set
+            for col in range(w):
+                idx = page * w + col
+                if img.getpixel((col, row)):
+                    display.oled.buffer[idx] |= mask_set
+                else:
+                    display.oled.buffer[idx] &= mask_clr
 
     def _render_speech(self, display):
         display.oled.fill(0)
@@ -295,9 +345,10 @@ class TranslationApp(BaseApp):
             self.translation_data = message.get("data")
             self.translation_groupings = message.get("groupings")
             self.display_idx = 0
-            # Rebuild wrapped-line cache so _scroll_text and _render_text agree on total length.
+            # Rebuild wrapped-line cache using PIL metrics when available so that
+            # _scroll_text and _render_text always agree on total line count.
             display = self.shared_class.display
-            chars_per_line = display.oled.width // 6
+            _, chars_per_line, _ = _pil_text_metrics(display.oled.width)
             lines = []
             for segment in str(self.translation_data).split("\n"):
                 seg = segment.strip()

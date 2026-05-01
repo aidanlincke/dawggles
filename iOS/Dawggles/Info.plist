@@ -27,6 +27,8 @@
 		<key>NavigationSearch</key>
 		<string>Precise location is required to find the nearest place when you search.</string>
 	</dict>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Dawggles saves photos you capture from your goggles to your Photos library.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dawggles uses your microphone to capture speech for real-time translation on your goggles.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

@@ -116,4 +116,9 @@ class GPSApp(BaseApp):
     def on_message(self, message):
         if "data" in message:
             self.gps_data = message.get("data")
-            self.update_display()
+            # Only repaint when GPS is the active app. Otherwise the display
+            # routes through `_render_current_state`, finds no current app
+            # mounted (e.g. user is on home), and blanks the screen — which
+            # is what caused the "type a destination → black screen" bug.
+            if self.shared_class.current_app == self.name:
+                self.update_display()

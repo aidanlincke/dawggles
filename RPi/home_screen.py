@@ -2,12 +2,14 @@
 import logging
 
 from apps.translation_app import TranslationApp
+from apps.camera_app import CameraApp
 from apps.gps_app import GPSApp
 from apps.settings_app import SettingsApp
+from apps.snake_app import SnakeApp
 
 log = logging.getLogger(__name__)
 
-_APP_CLASSES = [TranslationApp, GPSApp, SettingsApp]
+_APP_CLASSES = [TranslationApp, CameraApp, GPSApp, SnakeApp, SettingsApp]
 
 _selected = 0
 
