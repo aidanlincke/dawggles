@@ -33,3 +33,6 @@ websockets>=12.0
 bless>=0.2.6
 dbus-next>=0.2.0
 dbus-python>=1.3.2
+
+# --- Security (TLS cert generation at pairing time) ---
+cryptography>=41.0.0

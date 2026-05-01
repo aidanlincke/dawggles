@@ -2,18 +2,17 @@
 """
 pairing/pair.py — BLE pairing for Dawggles (BlueZ Numeric Comparison).
 
-Exposes two public functions for use by main.py:
+Public API:
 
     is_paired()                        → bool
     run_pairing_flow(display, confirm_button, cancel_button=None)  → bool
-                                        (True = paired successfully)
+                                        (True = paired + token delivered)
 
 System packages required (not pip):
     sudo apt install python3-dbus python3-gi
 """
 
 import signal
-import sys
 import threading
 import logging
 
@@ -34,14 +33,25 @@ AGENT_MANAGER_IFACE  = "org.bluez.AgentManager1"
 AGENT_IFACE          = "org.bluez.Agent1"
 LE_ADV_MANAGER_IFACE = "org.bluez.LEAdvertisingManager1"
 LE_ADV_IFACE         = "org.bluez.LEAdvertisement1"
+GATT_MANAGER_IFACE   = "org.bluez.GattManager1"
+GATT_SERVICE_IFACE   = "org.bluez.GattService1"
+GATT_CHAR_IFACE      = "org.bluez.GattCharacteristic1"
 PROPS_IFACE          = "org.freedesktop.DBus.Properties"
 OBJ_MANAGER_IFACE    = "org.freedesktop.DBus.ObjectManager"
 
 AGENT_PATH        = "/org/dawggles/agent"
 ADV_PATH          = "/org/dawggles/advertisement0"
+GATT_APP_PATH     = "/org/dawggles/gatt"
+GATT_SERVICE_PATH = "/org/dawggles/gatt/service0"
+GATT_CHAR_PATH    = "/org/dawggles/gatt/service0/char0"
+
 DEVICE_NAME       = "Dawggles"
 PAIR_SERVICE_UUID = "0000d100-0000-1000-8000-00805f9b34fb"
-_CONFIRM_TIMEOUT_SECS = 30
+TOKEN_CHAR_UUID   = "0000d101-0000-1000-8000-00805f9b34fb"
+
+_CONFIRM_TIMEOUT_SECS        = 30
+_TOKEN_DELIVERY_TIMEOUT_SECS = 30
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -102,6 +112,107 @@ def _register_advertisement(ad_mgr, timeout_seconds=15):
         return
     err = state["error"] or RuntimeError("Unknown LE advertisement failure")
     raise err if isinstance(err, Exception) else RuntimeError(str(err))
+
+
+def _register_gatt_application(bus, timeout_seconds=10):
+    """Register GATT application with BlueZ synchronously."""
+    wait_loop = GLib.MainLoop()
+    state = {"ok": False, "error": None}
+
+    def on_reply():
+        state["ok"] = True
+        wait_loop.quit()
+
+    def on_error(err):
+        state["error"] = err
+        wait_loop.quit()
+
+    def on_timeout():
+        state["error"] = TimeoutError(f"RegisterApplication timed out after {timeout_seconds}s")
+        wait_loop.quit()
+        return False
+
+    timeout_id = GLib.timeout_add_seconds(timeout_seconds, on_timeout)
+    gatt_mgr = dbus.Interface(bus.get_object(BLUEZ_SERVICE, ADAPTER_PATH), GATT_MANAGER_IFACE)
+    gatt_mgr.RegisterApplication(
+        GATT_APP_PATH, {},
+        reply_handler=on_reply,
+        error_handler=on_error,
+    )
+    wait_loop.run()
+    try:
+        GLib.source_remove(timeout_id)
+    except Exception:
+        pass
+    if state["ok"]:
+        return gatt_mgr
+    err = state["error"] or RuntimeError("GATT registration failed")
+    raise err if isinstance(err, Exception) else RuntimeError(str(err))
+
+
+# ── GATT Objects ───────────────────────────────────────────────────────────────
+
+class _GattService(dbus.service.Object):
+    """org.bluez.GattService1 — exposes our pairing service to BlueZ's GATT stack."""
+
+    def __init__(self, bus):
+        super().__init__(bus, GATT_SERVICE_PATH)
+
+
+class _GattTokenChar(dbus.service.Object):
+    """
+    org.bluez.GattCharacteristic1 — serves the 64-byte (token || cert_fingerprint)
+    payload to the bonded phone.
+
+    Flag `encrypt-authenticated-read` enforces that the BLE link must be both
+    encrypted and MITM-authenticated (which Numeric Comparison LE Secure
+    Connections guarantees) before the value is returned.  Any eavesdropper on
+    the 2.4 GHz band cannot read this characteristic.
+    """
+
+    def __init__(self, bus, credential_payload, on_read_cb):
+        super().__init__(bus, GATT_CHAR_PATH)
+        # dbus.Array of dbus.Byte — returned directly to BlueZ on ReadValue
+        self._value      = [dbus.Byte(b) for b in credential_payload]
+        self._on_read_cb = on_read_cb
+
+    @dbus.service.method(GATT_CHAR_IFACE, in_signature="a{sv}", out_signature="ay")
+    def ReadValue(self, options):
+        log.info("GATT: token characteristic read — delivering credentials to phone")
+        if self._on_read_cb:
+            GLib.idle_add(self._on_read_cb)
+        return dbus.Array(self._value, signature="y")
+
+
+class _GattApplication(dbus.service.Object):
+    """
+    org.freedesktop.DBus.ObjectManager — lets BlueZ discover the GATT service
+    hierarchy via GetManagedObjects, then dispatches reads to _GattTokenChar.
+    """
+
+    def __init__(self, bus, credential_payload, on_read_cb):
+        super().__init__(bus, GATT_APP_PATH)
+        self._service = _GattService(bus)
+        self._char    = _GattTokenChar(bus, credential_payload, on_read_cb)
+
+    @dbus.service.method(OBJ_MANAGER_IFACE, out_signature="a{oa{sa{sv}}}")
+    def GetManagedObjects(self):
+        return {
+            dbus.ObjectPath(GATT_SERVICE_PATH): {
+                GATT_SERVICE_IFACE: {
+                    "UUID":    dbus.String(PAIR_SERVICE_UUID),
+                    "Primary": dbus.Boolean(True),
+                }
+            },
+            dbus.ObjectPath(GATT_CHAR_PATH): {
+                GATT_CHAR_IFACE: {
+                    "UUID":    dbus.String(TOKEN_CHAR_UUID),
+                    "Service": dbus.ObjectPath(GATT_SERVICE_PATH),
+                    "Flags":   dbus.Array(["encrypt-authenticated-read"], signature="s"),
+                    "Value":   dbus.Array(self._char._value, signature="y"),
+                }
+            },
+        }
 
 
 # ── BlueZ Agent1 ───────────────────────────────────────────────────────────────
@@ -411,7 +522,6 @@ def perform_unpair_and_restart(shared_class) -> None:
     time.sleep(2.5)
 
     # Release hardware before re-exec so the new process can claim it cleanly.
-    # Each step is best-effort — we always re-exec regardless of outcome.
     camera_client = getattr(shared_class, "camera_client", None)
     if camera_client is not None:
         try:
@@ -440,15 +550,25 @@ def perform_unpair_and_restart(shared_class) -> None:
 
 def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event=None) -> bool:
     """
-    Advertise BLE as "Dawggles" and wait for an iPhone to complete pairing.
+    Generate fresh credentials, advertise BLE as "Dawggles", wait for an iPhone
+    to complete Numeric Comparison pairing, then serve the 64-byte credential
+    payload via an authenticated-encrypted GATT characteristic so the phone can
+    establish a secure WebSocket connection.
 
-    When iOS initiates Numeric Comparison, the 6-digit code is shown on the OLED.
-    The user presses the front/action button to confirm or the back/cycle button
-    to reject, and the device keeps advertising for the next attempt.
-
-    Blocks until pairing succeeds (returns True) or a fatal BLE setup error
-    occurs (returns False).
+    Blocks until the phone reads the credential characteristic (or a 30 s
+    delivery timeout fires after pairing), or until a fatal BLE setup error
+    occurs.  Returns True on pairing success.
     """
+    from pairing.token_manager import generate_credentials
+
+    # ── Generate credentials before advertising ────────────────────────────────
+    try:
+        credential_payload = generate_credentials()
+    except Exception as e:
+        log.error("Failed to generate pairing credentials: %s", e)
+        display.show_temporary_message(["Cred error", "See logs"], duration=4.0)
+        return False
+
     try:
         bus = dbus.SystemBus()
     except Exception as e:
@@ -456,10 +576,10 @@ def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event
         display.show_temporary_message(["BLE UNAVAIL", "No D-Bus"], duration=4.0)
         return False
 
-    loop = GLib.MainLoop()
-    result = {"success": False}
+    loop   = GLib.MainLoop()
+    result = {"success": False, "token_delivered": False}
 
-    # Name the adapter
+    # ── Name the adapter ───────────────────────────────────────────────────────
     try:
         adapter_props = dbus.Interface(
             bus.get_object(BLUEZ_SERVICE, ADAPTER_PATH), PROPS_IFACE
@@ -468,7 +588,24 @@ def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event
     except Exception as e:
         log.warning("BLE: could not set adapter alias: %s", e)
 
-    # Register agent
+    # ── GATT application (serves token + cert fingerprint after pairing) ───────
+    def on_token_read():
+        result["token_delivered"] = True
+        log.info("BLE: credentials delivered to phone — pairing complete")
+        if loop.is_running():
+            loop.quit()
+        return False  # don't re-schedule GLib.idle_add
+
+    gatt_app  = _GattApplication(bus, credential_payload, on_token_read)
+    gatt_mgr  = None
+    try:
+        gatt_mgr = _register_gatt_application(bus)
+        log.info("BLE: GATT token characteristic registered (encrypt-authenticated-read)")
+    except Exception as e:
+        log.warning("BLE: GATT registration failed (%s) — continuing without secure token delivery", e)
+        # Non-fatal: phone still pairs, but WebSocket auth will fail until re-pair.
+
+    # ── BlueZ agent ───────────────────────────────────────────────────────────
     agent = DawgglesAgent(bus, AGENT_PATH, loop, display, confirm_button, cancel_button)
     agent_mgr = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, BLUEZ_PATH), AGENT_MANAGER_IFACE
@@ -480,9 +617,10 @@ def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event
     except Exception as e:
         log.error("BLE: agent registration failed: %s", e)
         display.show_temporary_message(["BLE ERROR", "Agent fail"], duration=4.0)
+        _cleanup_gatt(gatt_mgr)
         return False
 
-    # LE advertising
+    # ── LE advertising ─────────────────────────────────────────────────────────
     if not adapter_supports_le_advertising(bus):
         log.error("BLE: adapter has no LEAdvertisingManager1")
         display.show_temporary_message(["BLE ERROR", "No LE advert"], duration=4.0)
@@ -490,6 +628,7 @@ def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event
             agent_mgr.UnregisterAgent(AGENT_PATH)
         except Exception:
             pass
+        _cleanup_gatt(gatt_mgr)
         return False
 
     ad_mgr = dbus.Interface(
@@ -506,21 +645,42 @@ def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event
             agent_mgr.UnregisterAgent(AGENT_PATH)
         except Exception:
             pass
+        _cleanup_gatt(gatt_mgr)
         return False
 
-    # Watch for the Paired property flipping True
+    # ── Watch for Paired=True, then wait for GATT read ─────────────────────────
+    delivery_timeout_id = None
+
     def on_props_changed(iface, changed, invalidated, path=None):
+        nonlocal delivery_timeout_id
         if iface != DEVICE_IFACE or not changed.get("Paired", False):
             return
         try:
             dev_props = dbus.Interface(bus.get_object(BLUEZ_SERVICE, path), PROPS_IFACE)
             dev_props.Set(DEVICE_IFACE, "Trusted", dbus.Boolean(True))
             name = str(dev_props.Get(DEVICE_IFACE, "Name"))
-            log.info("BLE: paired with '%s' — marked trusted", name)
+            log.info("BLE: paired with '%s' — marked trusted, awaiting GATT credential read", name)
         except Exception:
-            log.info("BLE: pairing complete")
+            log.info("BLE: pairing complete — awaiting GATT credential read")
+
         result["success"] = True
-        loop.quit()
+
+        # Keep the loop running so the phone can read the GATT characteristic.
+        # Quit automatically after _TOKEN_DELIVERY_TIMEOUT_SECS if the read
+        # never arrives (e.g. old app version or BLE reconnection delay).
+        def on_delivery_timeout():
+            if not result["token_delivered"]:
+                log.warning(
+                    "BLE: token delivery timeout — phone did not read GATT char within %ds",
+                    _TOKEN_DELIVERY_TIMEOUT_SECS,
+                )
+            if loop.is_running():
+                loop.quit()
+            return False
+
+        delivery_timeout_id = GLib.timeout_add_seconds(
+            _TOKEN_DELIVERY_TIMEOUT_SECS, on_delivery_timeout
+        )
 
     bus.add_signal_receiver(
         on_props_changed,
@@ -548,6 +708,11 @@ def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event
     except KeyboardInterrupt:
         log.info("BLE: pairing cancelled (interrupt)")
     finally:
+        if delivery_timeout_id is not None:
+            try:
+                GLib.source_remove(delivery_timeout_id)
+            except Exception:
+                pass
         try:
             set_adapter(bus, discoverable=False, pairable=False)
         except Exception:
@@ -560,13 +725,25 @@ def run_pairing_flow(display, confirm_button, cancel_button=None, shutdown_event
             agent_mgr.UnregisterAgent(AGENT_PATH)
         except Exception:
             pass
+        _cleanup_gatt(gatt_mgr)
 
     return result["success"]
+
+
+def _cleanup_gatt(gatt_mgr):
+    """Unregister the GATT application from BlueZ, best-effort."""
+    if gatt_mgr is None:
+        return
+    try:
+        gatt_mgr.UnregisterApplication(GATT_APP_PATH)
+    except Exception:
+        pass
 
 
 # ── Standalone CLI (original behaviour) ───────────────────────────────────────
 
 if __name__ == "__main__":
+    import sys
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 

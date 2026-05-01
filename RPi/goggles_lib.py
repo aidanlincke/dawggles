@@ -4,7 +4,9 @@ import io
 import json
 import logging
 import queue
+import secrets
 import socket
+import ssl
 import time
 from threading import Event, Lock, Thread, Timer
 
@@ -60,13 +62,23 @@ class WebSocketServer:
     """
     WebSocket server: one persistent client connection at a time, full duplex.
     Runs an asyncio event loop in a daemon thread; all other code stays threaded.
-    Inbound: UTF-8 JSON text frames from the phone.
-    Outbound: JSON text frames plus optional binary frames (raw JPEG camera stream bytes).
+
+    Security model
+    ──────────────
+    When ssl_context is provided the server runs WSS (TLS-encrypted).  The very
+    first message from every client must be a JSON auth frame:
+
+        {"type": "auth", "token": "<base64(32-byte-token)>"}
+
+    The token is compared (constant-time) against the value on disk.  Any
+    connection that fails or times out on auth is closed immediately.
     """
 
-    def __init__(self, shared_class, host="0.0.0.0", port=8765, message_handler=None):
+    def __init__(self, shared_class, host="0.0.0.0", port=8765, message_handler=None,
+                 ssl_context=None):
         self.shared_class = shared_class
         self.message_handler = message_handler
+        self._ssl_context = ssl_context
         self._ws = None          # current websocket connection
         self._loop = asyncio.new_event_loop()
         self.message_queue = queue.Queue()
@@ -110,12 +122,63 @@ class WebSocketServer:
             max_size=MAX_JSON_MESSAGE_BYTES,
             ping_interval=5,
             ping_timeout=3,
+            ssl=self._ssl_context,
         ):
+            scheme = "wss" if self._ssl_context else "ws"
             self._listening_event.set()
-            log.info("websocket server listening on %s:%s", host, port)
+            log.info("websocket server listening on %s://%s:%s", scheme, host, port)
             await asyncio.Future()  # run forever
 
+    async def _authenticate(self, ws) -> bool:
+        """Verify the bearer token sent as the first message. Returns True on success."""
+        from pairing.token_manager import load_token
+
+        stored_token = load_token()
+        if stored_token is None:
+            log.warning("websocket: no auth token on disk — rejecting connection")
+            await ws.close(4001, "service unavailable")
+            return False
+
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
+        except asyncio.TimeoutError:
+            log.warning("websocket: auth timeout from %s", ws.remote_address)
+            await ws.close(4001, "auth timeout")
+            return False
+        except Exception:
+            return False
+
+        try:
+            msg = json.loads(raw)
+        except Exception:
+            log.warning("websocket: non-JSON auth message from %s", ws.remote_address)
+            await ws.close(4001, "invalid auth")
+            return False
+
+        if not isinstance(msg, dict) or msg.get("type") != "auth":
+            log.warning("websocket: expected auth message, got type=%r", msg.get("type"))
+            await ws.close(4001, "expected auth")
+            return False
+
+        try:
+            received_token = base64.b64decode(msg.get("token", ""))
+        except Exception:
+            log.warning("websocket: malformed token encoding from %s", ws.remote_address)
+            await ws.close(4001, "invalid token")
+            return False
+
+        if not secrets.compare_digest(received_token, stored_token):
+            log.warning("websocket: authentication failed from %s", ws.remote_address)
+            await ws.close(4001, "unauthorized")
+            return False
+
+        log.info("websocket: authenticated %s", ws.remote_address)
+        return True
+
     async def _handler(self, ws):
+        if not await self._authenticate(ws):
+            return
+
         self._ws = ws
         log.info("websocket client connected: %s", ws.remote_address)
         try:

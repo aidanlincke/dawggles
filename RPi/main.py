@@ -7,6 +7,7 @@ Start the hotspot, then run:
 import logging
 import os
 import signal
+import ssl
 import threading
 import subprocess
 import time
@@ -16,6 +17,7 @@ import dbus.mainloop.glib
 from goggles_lib import Display, GoggleButton, WebSocketServer, SharedClass
 from home_screen import show_home_screen
 from pairing.pair import is_paired, run_pairing_flow
+from pairing.token_manager import cert_path, key_path, has_credentials
 
 _FORCE_PAIR_SENTINEL = "/tmp/dawggles_force_pair"
 _shutdown = threading.Event()
@@ -59,15 +61,24 @@ def _wait_for_network(shared: SharedClass) -> None:
     logging.info("Network is ready.")
 
 
+def _make_ssl_context() -> ssl.SSLContext | None:
+    """Build a TLS server context from the on-disk cert/key generated at pairing time.
+    Returns None (and logs a warning) if the credential files are missing."""
+    if not has_credentials():
+        logging.warning("No TLS credentials on disk — WebSocket will reject all connections")
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile=cert_path(), keyfile=key_path())
+    return ctx
+
+
 def main() -> None:
     # Must be called before any dbus.SystemBus() connection (pairing uses BlueZ).
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     signal.signal(signal.SIGTERM, lambda *_: _shutdown.set())
 
-    # PiSugar custom button → SIGUSR1 → toggle display sleep. The display is
-    # blanked via SSD1306 poweroff (buffer preserved) and button input is
-    # gated, so the user lands back exactly where they left off on wake.
+    # PiSugar custom button → SIGUSR1 → toggle display sleep.
     def _toggle_display(_signum, _frame):
         try:
             if shared.display is not None:
@@ -84,21 +95,6 @@ def main() -> None:
     # Back button initialised early — used as "back/cancel" during pairing.
     shared.cycle_button = GoggleButton(shared_class=shared, pin=23, button_callback=None)
 
-    # ── Always-on WebSocket ─────────────────────────────────────────────────
-    # Bring up the socket server immediately so it is available during pairing
-    # and remains up for the entire process lifetime.
-    shared.server = WebSocketServer(shared, host="0.0.0.0", port=8765)
-
-    for _ in range(30):
-        if shared.server.is_listening:
-            break
-        if shared.server.startup_error is not None:
-            raise RuntimeError(f"WebSocket server failed to start: {shared.server.startup_error}")
-        time.sleep(0.1)
-
-    if not shared.server.is_listening:
-        logging.warning("WebSocket server did not report listening state yet; continuing")
-
     # Wait for AP/network readiness before proceeding to pairing and app startup.
     _wait_for_network(shared)
 
@@ -110,12 +106,31 @@ def main() -> None:
         except OSError:
             pass
 
-    if force_pair or not is_paired():
-        logging.info("Starting pairing flow%s.", " (forced after unpair)" if force_pair else "")
+    # Also force re-pairing if credentials are missing — phone can't authenticate
+    # without a token, and the only way to deliver a new token is via BLE pairing.
+    needs_pairing = force_pair or not is_paired() or not has_credentials()
+
+    if needs_pairing:
+        logging.info(
+            "Starting pairing flow%s.",
+            " (forced after unpair)" if force_pair else
+            " (credentials missing)" if not has_credentials() else ""
+        )
         run_pairing_flow(shared.display, shared.button, shared.cycle_button, shutdown_event=_shutdown)
-        # run_pairing_flow blocks until the device is paired (or a fatal BLE
-        # error occurs).  Either way we continue; the WebSocket handshake will
-        # surface any remaining issues.
+
+    # ── WebSocket server (started after pairing so TLS credentials exist) ─────
+    ssl_ctx = _make_ssl_context()
+    shared.server = WebSocketServer(shared, host="0.0.0.0", port=8765, ssl_context=ssl_ctx)
+
+    for _ in range(30):
+        if shared.server.is_listening:
+            break
+        if shared.server.startup_error is not None:
+            raise RuntimeError(f"WebSocket server failed to start: {shared.server.startup_error}")
+        time.sleep(0.1)
+
+    if not shared.server.is_listening:
+        logging.warning("WebSocket server did not report listening state yet; continuing")
 
     # ── Normal startup ────────────────────────────────────────────────────────
     if not _shutdown.is_set():
@@ -127,9 +142,6 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        # Stop the stream thread first so nothing redraws over us, then blank the
-        # OLED last. SSD1306 pixels latch — if we exit before clearing, the frame
-        # stays lit until next power-up.
         if shared.camera_client:
             try:
                 shared.camera_client.stop_stream_thread()

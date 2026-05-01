@@ -1,6 +1,7 @@
 import Foundation
 import Speech
 import Combine
+import CryptoKit
 import Network
 import UIKit
 import Darwin
@@ -218,8 +219,56 @@ class DawgglesConnection: ObservableObject {
         openWebSocket(host: host, logLabel: "hotspot")
     }
 
+    /// Build NWParameters for a WSS connection with certificate pinning.
+    /// If no fingerprint is stored in the Keychain the verify block accepts any
+    /// certificate — the bearer-token check on the server still applies, so the
+    /// connection is authenticated even without pinning.
+    private func makeTLSParameters() -> NWParameters {
+        let tlsOptions = NWProtocolTLS.Options()
+        let verifyQueue = DispatchQueue(label: "DawgglesConnection.TLSVerify")
+
+        if let pinnedFingerprint = DawgglesKeychain.loadCertFingerprint() {
+            sec_protocol_options_set_verify_block(
+                tlsOptions.securityProtocolOptions,
+                { _, secTrust, complete in
+                    let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
+                    // Retrieve the leaf certificate from the chain.
+                    guard
+                        let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+                        let leaf = chain.first
+                    else {
+                        complete(false)
+                        return
+                    }
+                    // SHA-256 of the DER-encoded certificate — must match the value
+                    // delivered at pairing time and stored in the Keychain.
+                    let certData    = SecCertificateCopyData(leaf) as Data
+                    let fingerprint = Data(SHA256.hash(data: certData))
+                    complete(fingerprint == pinnedFingerprint)
+                },
+                verifyQueue
+            )
+        }
+
+        let params = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
+        let wsOptions = NWProtocolWebSocket.Options()
+        wsOptions.autoReplyPing = true
+        params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        return params
+    }
+
+    /// Send the bearer token as the very first WebSocket message so the Pi can
+    /// authenticate this connection before routing any application traffic.
+    private func sendAuthToken() {
+        guard let token = DawgglesKeychain.loadToken() else {
+            print("DawgglesConnection: no auth token in Keychain — connection will be rejected by Pi")
+            return
+        }
+        sendJSON(["type": "auth", "token": token.base64EncodedString()])
+    }
+
     private func openWebSocket(host: String, logLabel: String) {
-        guard let wsURL = URL(string: "ws://\(host):\(websocketPort.rawValue)/") else {
+        guard let wsURL = URL(string: "wss://\(host):\(websocketPort.rawValue)/") else {
             print("DawgglesConnection: invalid WebSocket URL for host \(host)")
             isConnecting = false
             return
@@ -228,10 +277,7 @@ class DawgglesConnection: ObservableObject {
         connection?.cancel()
         hasScheduledRetryForCurrentConnection = false
 
-        let params = NWParameters.tcp
-        let wsOptions = NWProtocolWebSocket.Options()
-        wsOptions.autoReplyPing = true
-        params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        let params = makeTLSParameters()
 
         let conn = NWConnection(to: .url(wsURL), using: params)
         connection = conn
@@ -253,6 +299,7 @@ class DawgglesConnection: ObservableObject {
                     self.isConnected = true
                     self.retryAttempt = 0
                     self.isConnecting = false
+                    self.sendAuthToken()   // must be first — Pi requires auth before routing
                     self.receiveMessage()
                 case .waiting(let error):
                     print("DawgglesConnection: waiting — \(error)")
