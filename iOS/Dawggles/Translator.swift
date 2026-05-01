@@ -81,7 +81,7 @@ class Translator: ObservableObject {
 
     // MARK: - Still photo: OCR + block grouping
 
-    func processAndTranslate(image: UIImage, completion: @escaping ([TranslationBlock]) -> Void) {
+    func processAndTranslate(image: UIImage, sourceCode: String = "", completion: @escaping ([TranslationBlock]) -> Void) {
         guard let cgImage = image.cgImage else {
             completion([])
             return
@@ -140,7 +140,7 @@ class Translator: ObservableObject {
 
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
-        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "ja", "ko", "en-US"]
+        request.recognitionLanguages = TranslationSettings.visionLanguages(for: sourceCode)
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {

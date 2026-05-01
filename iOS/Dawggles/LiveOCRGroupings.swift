@@ -17,7 +17,8 @@ enum LiveOCRGroupings {
 
     /// OCR on-device; builds `groupings` for the Pi. `translated_text` holds source text until translation runs.
     /// Nearby lines (typical signs / packaging) are merged into one grouping with a union box and space-joined text.
-    static func buildGroupings(from image: UIImage) -> [[String: Any]] {
+    /// Pass `sourceCode: ""` for Auto (all languages); otherwise only the selected language is searched.
+    static func buildGroupings(from image: UIImage, sourceCode: String = "") -> [[String: Any]] {
         let scaled = scaleIfNeeded(image, maxSide: maxLiveOCRSide)
         guard let cgImage = scaled.cgImage else { return [] }
 
@@ -25,7 +26,7 @@ enum LiveOCRGroupings {
         request.recognitionLevel = .accurate
         // Reduces invented “words” from background texture vs language-correction on packaging/labels.
         request.usesLanguageCorrection = false
-        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "ja", "ko", "en-US"]
+        request.recognitionLanguages = TranslationSettings.visionLanguages(for: sourceCode)
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up, options: [:])
         do {
             try handler.perform([request])

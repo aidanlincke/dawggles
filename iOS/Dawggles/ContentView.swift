@@ -26,6 +26,23 @@ class TranslationSettings: ObservableObject {
         selectedSourceIndex == 0 ? nil : Locale.Language(identifier: Self.sourceLanguageCodes[selectedSourceIndex])
     }
 
+    /// Vision recognition language identifiers for a given source language code.
+    /// Pass `""` (Auto) to get the full set covering every supported language.
+    /// Chinese maps to both simplified and traditional variants.
+    static func visionLanguages(for sourceCode: String) -> [String] {
+        switch sourceCode {
+        case "":   return ["zh-Hans", "zh-Hant", "ja", "ko", "en-US", "es", "fr", "de"]
+        case "zh": return ["zh-Hans", "zh-Hant"]
+        case "en": return ["en-US"]
+        case "es": return ["es"]
+        case "fr": return ["fr-FR"]
+        case "de": return ["de-DE"]
+        case "ja": return ["ja-JP"]
+        case "ko": return ["ko-KR"]
+        default:   return ["en-US"]
+        }
+    }
+
     var targetLanguage: Locale.Language {
         Locale.Language(identifier: Self.targetLanguageCodes[selectedTargetIndex])
     }
@@ -375,6 +392,10 @@ private struct PairedView: View {
                 locationManager.requestAlwaysAuthorization()
                 MicrophoneManager.shared.requestPermission()
                 connection.translationSettings = translationSettings
+                liveAlignment.sourceCode = TranslationSettings.sourceLanguageCodes[translationSettings.selectedSourceIndex]
+            }
+            .onChange(of: translationSettings.selectedSourceIndex) { newIndex in
+                liveAlignment.sourceCode = TranslationSettings.sourceLanguageCodes[newIndex]
             }
             .onDisappear {
                 connection.liveAlignment = nil

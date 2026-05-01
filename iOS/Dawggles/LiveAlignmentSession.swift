@@ -46,6 +46,10 @@ final class LiveAlignmentSession: ObservableObject {
     /// they appear/disappear with detection, independent of translation lag.
     @Published private(set) var liveDetectedGroupings: [[String: Any]] = []
 
+    /// Source language code (from TranslationSettings) — drives which Vision languages are searched.
+    /// `""` = Auto (all languages). Updated by ContentView on language change.
+    var sourceCode: String = ""
+
     private weak var connection: DawgglesConnection?
     private var latestLiveFrame: UIImage?
     private var tick: AnyCancellable?
@@ -146,13 +150,14 @@ final class LiveAlignmentSession: ObservableObject {
         lastLiveOCRTime = now
 
         let image = live
+        let capturedSourceCode = sourceCode
         ocrSeq += 1
         let seq = ocrSeq
         #if DEBUG
         print("[LIVE] LiveAlignment: OCR start seq=\(seq) img=\(Int(image.size.width))x\(Int(image.size.height))")
         #endif
         DispatchQueue.global(qos: .userInitiated).async {
-            let g = LiveOCRGroupings.buildGroupings(from: image)
+            let g = LiveOCRGroupings.buildGroupings(from: image, sourceCode: capturedSourceCode)
             DispatchQueue.main.async { [weak self] in
                 guard let self, seq == self.ocrSeq else { return }
                 #if DEBUG
