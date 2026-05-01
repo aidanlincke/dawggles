@@ -18,6 +18,7 @@ class DawgglesConnection: ObservableObject {
     @Published private(set) var oledImage: UIImage? = nil
 
     weak var liveAlignment: LiveAlignmentSession?
+    var translationSettings: TranslationSettings?
 
     private var connection: NWConnection?
     private var reconnectWorkItem: DispatchWorkItem?
@@ -486,15 +487,8 @@ class DawgglesConnection: ObservableObject {
 
     private func activateMic() {
         let mic = MicrophoneManager.shared
-        mic.onAudioBuffer = { [weak self] data in
-            self?.sendAudioFrame(data)
-        }
         mic.start()
-        guard mic.isOnDeviceAvailable else {
-            sendJSON(["app": "translation", "event": "speech_model_unavailable"])
-            return
-        }
-        mic.startSpeechRecognition { [weak self] text in
+        mic.startSpeechRecognition(locale: resolvedSpeechLocale()) { [weak self] text, _ in
             self?.sendJSON([
                 "app": "translation",
                 "event": "speech_text",
@@ -506,15 +500,22 @@ class DawgglesConnection: ObservableObject {
     private func deactivateMic() {
         MicrophoneManager.shared.stopSpeechRecognition()
         MicrophoneManager.shared.stop()
-        MicrophoneManager.shared.onAudioBuffer = nil
     }
 
-    private func sendAudioFrame(_ data: Data) {
-        guard let conn = connection else { return }
-        let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
-        let context = NWConnection.ContentContext(identifier: "audio", metadata: [meta])
-        conn.send(content: data, contentContext: context, isComplete: true, completion: .idempotent)
+    private func resolvedSpeechLocale() -> Locale {
+        guard let settings = translationSettings else { return .current }
+        if settings.selectedSourceIndex == 0 {
+            // Auto — switch picker to device locale
+            let code = Locale.current.language.languageCode?.identifier ?? "en"
+            let idx = TranslationSettings.sourceLanguageCodes.firstIndex(of: code)
+                   ?? TranslationSettings.sourceLanguageCodes.firstIndex(of: "en")
+                   ?? 1
+            settings.selectedSourceIndex = idx
+            return Locale(identifier: TranslationSettings.sourceLanguageCodes[idx])
+        }
+        return Locale(identifier: TranslationSettings.sourceLanguageCodes[settings.selectedSourceIndex])
     }
+
 
     // MARK: - OLED decode
 

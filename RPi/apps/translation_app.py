@@ -153,11 +153,7 @@ class TranslationApp(BaseApp):
         display.oled.fill(0)
         display.draw_app_header("Translate")
         content_y = display.HEADER_CONTENT_START_Y
-        if self.speech_text == "\x01":
-            msg = "Model loading..."
-            tx = max(0, (display.oled.width - len(msg) * 6) // 2)
-            display.oled.text(msg, tx, content_y + 10, 1)
-        elif self.speech_text.strip():
+        if self.speech_text.strip():
             # Show last 30 chars (two lines of 15), so newest words stay visible
             tail = self.speech_text.strip()[-30:]
             for i, chunk in enumerate([tail[:15], tail[15:]]):
@@ -178,10 +174,6 @@ class TranslationApp(BaseApp):
             self.mode = "submenu"
 
     def on_message(self, message):
-        if message.get("event") == "speech_model_unavailable" and self.mode == "speech":
-            self.speech_text = "\x01"  # sentinel: model not ready
-            self.shared_class.display.update_display({"app": self.name})
-            return
         if message.get("event") == "speech_text" and self.mode == "speech":
             self.speech_text = message.get("text", "")
             self.shared_class.display.update_display({"app": self.name})
